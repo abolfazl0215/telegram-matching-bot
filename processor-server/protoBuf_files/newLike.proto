@@ -1,0 +1,33 @@
+syntax = "proto3";
+package com.abolfazl021mokhtaritari.pounes.proto;
+
+message Users {
+   repeated User users = 1;
+}
+
+message User {
+  int64 telegramId = 1;
+  repeated Liker likers = 2;
+  int64 time = 3;
+}
+
+message Liker {
+  string _id = 1;
+  int64 telegramId = 2;
+  string fullName = 3;
+  string userName = 4;
+  int32 age = 5;
+  string gender = 6;
+  string lookingFor = 7;
+  string state = 8;
+  bool sleep = 9;
+  string bio = 10;
+  repeated string profileImages = 11;
+  string inviteCode = 12;
+  string message = 13;
+  string platform = 14;
+  string fcmToken = 15;
+}
+
+
+

@@ -1,0 +1,38 @@
+telegramId,
+  fullName,
+  userName,
+  inviteCode,
+  age,
+  gender,
+  lookingFor,
+  state,
+  bio,
+
+  lastActivity,
+  createdAt,
+  picScore,
+
+  sleep,
+
+  fcmToken,
+  platform,
+
+  subscriptionExpireTime,
+
+  profileCompletedPercent,
+  ageRange: {
+    min,
+    max,
+  },
+
+  profileImages,
+
+  receivedLikes,
+  likedByMe: [Number], // maxLength = 1500 وقتی هرکدام به سقف رسید به نسبت کم شوند
+  nopedByMe: [Number], // maxLength = 1500
+  blockedByMe: [Number],
+  blockedMe: [Number],
+  reportedByMe: [Number],
+  matches: [Number],
+  unmatches: [Number],
+  likedAges: [Number],
