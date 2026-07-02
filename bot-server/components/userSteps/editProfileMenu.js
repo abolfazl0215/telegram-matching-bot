@@ -3,6 +3,14 @@ const fs = require("fs");
 const { reply } = require("../../telegram_methods/reply.js");
 
 const { checkUrl } = require("../../utils/checkUrl.js");
+const {
+  SEARCH_KEYBOARD,
+  MENU_KEYBOARD,
+  MY_PROFILE_MENU_KEYBOARD,
+} = require("../../bot/constants.js");
+const {
+  replyWithPhoto,
+} = require("../../telegram_methods/replyWithPhoto.js");
 
 const SUPPORT_ERROR_MSG =
   "مشکلی پیش آمده است لطفا به پشتیبانی اطلاع دهید (آیدی پشتیبانی در بیو)";
@@ -12,14 +20,9 @@ const DAILY_PHOTO_CHANGE_LIMIT = 3;
 const FOR_YOU_LIST_MIN_LENGTH = 10;
 const FOR_YOU_LIST_TTL_MS = 600000; // 10 دقیقه
 
-const kbSearchMenu = [
-  [{ text: "☰" }, { text: "❤️" }, { text: "❌" }, { text: "💌" }],
-];
-const kbEditMenu = [[{ text: "1🚀" }, { text: "2" }, { text: "3" }]];
-const kbEditMenuWithExtra = [
-  [{ text: "1🚀" }, { text: "2" }, { text: "3" }, { text: "4" }],
-];
-const kbBack = [[{ text: "بازگشت" }]];
+const kbSearchMenu = SEARCH_KEYBOARD;
+const kbEditMenu = MY_PROFILE_MENU_KEYBOARD;
+const kbEditMenuWithExtra = MENU_KEYBOARD;
 
 const EDIT_MENU_TEXT = `1. ${"مشاهده پروفایل ها"} \n2. ${"ویرایش پروفایلم"} \n3. ${"تغییر عکس من"}`;
 
@@ -66,17 +69,7 @@ const editProfileMenu = async (
       bio ? "\n" + bio : ""
     } \n/user_${inviteCode_from_forYouList || "not_found"}`;
 
-    try {
-      await ctx.replyWithPhoto(checkUrl(profileImages[0]), {
-        caption,
-      });
-    } catch (error) {
-      try {
-        await reply(ctx, next, redisClient, caption);
-      } catch (error) {
-        console.log(error);
-      }
-    }
+    await replyWithPhoto(ctx, next, profileImages, caption);
 
     // existingUser.lastViewed =
     //   +forYouList.get(telegramId)[0].telegramId;
@@ -84,7 +77,7 @@ const editProfileMenu = async (
     saveUser();
   };
 
-  if (text === "1🚀") {
+  if (text === "1 🚀") {
     try {
       existingUser.currentStep.flow = "bot";
       existingUser.currentStep.step = "search";
@@ -178,7 +171,12 @@ const editProfileMenu = async (
         next,
         redisClient,
         "عکس خود را ارسال کنید 🖼️",
-        kbBack,
+        process.env.PLATFORM == "bale"
+          ? [[{ text: "بازگشت" }]]
+          : [
+              [{ text: "بازگشت" }],
+              [{ text: "عکس پروفایل تلگرامم را قرار بده" }],
+            ],
       );
     } catch (error) {
       try {

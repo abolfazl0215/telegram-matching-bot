@@ -5,12 +5,21 @@ const mongoose = require("mongoose");
 const User = require("./models/User");
 const protobuff = require("./app/protobuf");
 const cron = require("node-cron");
+const { fillPool } = require("./utils/fillPool");
+const { updatePoolInRedis } = require("./utils/updatePoolInRedis");
+const { addToPool } = require("./utils/addToPool");
+const { getCandidates } = require("./utils/getCandidates.js");
+
+const monitoringRoute = require("./routes/monitoring.js");
 
 const {
   redisClient,
   cleanupOldUsersQueue,
   newLikeQueue,
   sendMessageToAllQueue,
+  addToPoolQueue,
+  requestToFillForYouList,
+  fillForYouList,
 } = require("./config/redis");
 
 // config dotenv
@@ -58,14 +67,18 @@ app.use(
     credentials: true,
   }),
 );
+
 app.use(express.json());
 
 app.use(bodyParser.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true }));
 
 app.use((req, res, next) => {
   req.redisClient = redisClient;
   next();
 });
+
+app.use("/", monitoringRoute);
 
 let usersArrayFromRedis = [];
 const getNewLikesFromProtoBuff = async () => {
@@ -290,6 +303,25 @@ newLikeQueue.process(2, async (job) => {
     await newLikeQueueController({ telegramId, liker, message });
   } catch (error) {
     console.error("Error processing explore queue:", error);
+  }
+});
+
+addToPoolQueue.process(2, async (job) => {
+  const { user } = job.data;
+  try {
+    await addToPool(user);
+  } catch (error) {
+    console.error("Error processing add to pool :", error);
+  }
+});
+
+requestToFillForYouList.process(2, async (job) => {
+  const { user } = job.data;
+  try {
+    const candidates = await getCandidates(user);
+    fillForYouList.add({ telegramId: user.telegramId, candidates });
+  } catch (error) {
+    console.error("Error processing add to pool :", error);
   }
 });
 
@@ -546,11 +578,26 @@ setInterval(async () => {
   } catch (error) {
     console.log(error);
   }
-}, 10000);
-// }, 3600000);
+  // }, 10000);
+}, 3600000);
 
 const PORT = 3010;
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`\n🚀 Pounes Matching Simulator v2.2`);
-  console.log(`📡 http://localhost:${PORT}`);
-});
+async function startServer() {
+  console.time("ّFill pool started in");
+  await fillPool();
+  console.timeEnd("ّFill pool started in");
+
+  setInterval(
+    async () => {
+      await updatePoolInRedis();
+    },
+    5 * 60 * 1000,
+  );
+
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`\n🚀 Pounes Matching Simulator v2.2`);
+    console.log(`📡 http://localhost:${PORT}`);
+  });
+}
+
+startServer();

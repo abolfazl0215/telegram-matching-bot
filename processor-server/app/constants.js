@@ -1,11 +1,7 @@
 const MENU_TEXT = `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`;
 
-function isBale() {
-  return process.env.PLATFORM == "bale";
-}
-
-function buildMenuKeyboard() {
-  return isBale()
+const MENU_KEYBOARD =
+  process.env.PLATFORM == "bale"
     ? [
         [
           { text: "1 🚀" },
@@ -22,16 +18,9 @@ function buildMenuKeyboard() {
           { text: "1 🚀" },
         ],
       ];
-}
 
-function buildMyProfileMenuKeyboard() {
-  return isBale()
-    ? [[{ text: "1 🚀" }, { text: "2" }, { text: "3" }]]
-    : [[{ text: "3" }, { text: "2" }, { text: "1 🚀" }]];
-}
-
-function buildSearchKeyboard() {
-  return isBale()
+const SEARCH_KEYBOARD =
+  process.env.PLATFORM == "bale"
     ? [
         [
           { text: "☰" },
@@ -48,15 +37,13 @@ function buildSearchKeyboard() {
           { text: "☰" },
         ],
       ];
-}
 
 const NOTIFICATION_MENU_TEXT = `${"افرادی شما را لایک کردند. یه نگاهی بنداز "}\n\n1. ${"نمایش"}\n2. ${"حالت خواب"}`;
 
-function buildNotificationMenuKeyboard() {
-  return isBale()
+const NOTIFICATION_MENU_KEYBOARD =
+  process.env.PLATFORM == "bale"
     ? [[{ text: "1 🚀" }, { text: "2" }]]
     : [[{ text: "2" }, { text: "1 🚀" }]];
-}
 
 const LIKE_HELP_TEXT =
   "💚 : لایک\n❌ : رد کردن\n💌 : لایک به همراه پیام\n☰ : منو\n\nوقتی کاربری را لایک میکنید ، لایک شما برای او ارسال میشود و اگر اوهم شما را لایک کند ، متصل میشوید .";
@@ -76,19 +63,10 @@ const INVITE_SHARE_PREFIX =
 
 module.exports = {
   MENU_TEXT,
-  get MENU_KEYBOARD() {
-    return buildMenuKeyboard();
-  },
-  get MY_PROFILE_MENU_KEYBOARD() {
-    return buildMyProfileMenuKeyboard();
-  },
-  get SEARCH_KEYBOARD() {
-    return buildSearchKeyboard();
-  },
+  MENU_KEYBOARD,
+  SEARCH_KEYBOARD,
   NOTIFICATION_MENU_TEXT,
-  get NOTIFICATION_MENU_KEYBOARD() {
-    return buildNotificationMenuKeyboard();
-  },
+  NOTIFICATION_MENU_KEYBOARD,
   LIKE_HELP_TEXT,
   USERNAME_REQUIRED_TEXT,
   USERNAME_REQUIRED_INLINE,

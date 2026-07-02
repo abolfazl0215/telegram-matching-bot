@@ -3,6 +3,7 @@ const { reply } = require("../telegram_methods/reply");
 const { PROVIDER_TOKEN } = require("../app/config");
 const { redisClient } = require("../config/redis");
 const Payments = require("../models/Payments");
+const usersMap = require("../utils/usersMap");
 
 const SUBSCRIPTION_PACKAGES = [
   {
@@ -31,7 +32,8 @@ const SUBSCRIPTION_PACKAGES = [
     menuLabel: "👑 3 ماهه + 1500 لایک  --  389,000 تومان (28% off)",
     title: "💎 اشتراک پرو + 1500 لایک اضافه",
     description: "💎 اشتراک پرو (سه ماهه) + 1500 لایک اضافه",
-    amount: 3890000,
+    amount: 10000,
+    // amount: 3890000,
     giftLikeCount: 1500,
     days: 90,
   },
@@ -67,7 +69,7 @@ function registerPaymentHandlers(bot) {
       ctx,
       next,
       redisClient,
-      "💎 اشتراک پرو + ❤️ لایک اضافه \n\nیه پکیج انتخاب کن:",
+      "💎 اشتراک پرو + 💚 لایک اضافه \n\nیه پکیج انتخاب کن:",
       [],
       SUBSCRIPTION_PACKAGES.map((p) => [
         { text: p.menuLabel, callback_data: p.callback },
@@ -147,7 +149,31 @@ function registerPaymentHandlers(bot) {
         );
       }
 
-      findUser.giftLikeCount += pkg.giftLikeCount;
+      try {
+        const userInMap = usersMap.get(q.from.id)?.user;
+        if (userInMap) {
+          if (!userInMap.likesLimit.giftLikeCount)
+            userInMap.likesLimit.giftLikeCount = 1;
+
+          userInMap.likesLimit.giftLikeCount += pkg.giftLikeCount;
+          userInMap.subscriptionExpireTime =
+            userInMap.subscriptionExpireTime > now
+              ? userInMap.subscriptionExpireTime + daysInMs
+              : now + daysInMs;
+
+          usersMap.set(q.from.id, {
+            user: userInMap,
+            time: Date.now(),
+          });
+        }
+      } catch (error) {
+        console.log({ error });
+      }
+
+      if (!findUser.likesLimit.giftLikeCount)
+        findUser.likesLimit.giftLikeCount = 1;
+
+      findUser.likesLimit.giftLikeCount += pkg.giftLikeCount;
       findUser.subscriptionExpireTime =
         findUser.subscriptionExpireTime > now
           ? findUser.subscriptionExpireTime + daysInMs

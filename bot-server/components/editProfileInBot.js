@@ -10,7 +10,15 @@ const Pictures = require("../models/Pictures");
 const { checkUrl } = require("../utils/checkUrl");
 const { lastTimeAddProfileToList } = require("../app/state");
 const { addToPool } = require("../utils/addToPool");
-const { getCandidates } = require("../utils/getCandidates");
+const {
+  addToPoolQueue,
+  requestToFillForYouList,
+} = require("../config/redis");
+const {
+  SEARCH_KEYBOARD,
+  MY_PROFILE_MENU_KEYBOARD,
+} = require("../bot/constants");
+const { replyWithPhoto } = require("../telegram_methods/replyWithPhoto");
 
 const SUPPORT_ERROR_MSG =
   "مشکلی پیش آمده است لطفا به پشتیبانی اطلاع دهید (آیدی پشتیبانی در بیو)";
@@ -77,14 +85,24 @@ const states = [
 
 const PREV_STEP_BTN = { text: "مرحله قبلی" };
 const kbAges = (chunkArray, ages) => [...chunkArray(ages, 4)];
-const kbGenderFilter = [
-  [
-    { text: "خانم 💁‍♀️" },
-    { text: "آقا 🙆‍♂️" },
-    { text: "فرقی ندارد ⚧️" },
-  ],
-  [PREV_STEP_BTN],
-];
+const kbGenderFilter =
+  process.env.PLATFORM == "bale"
+    ? [
+        [
+          { text: "خانم 💁‍♀️" },
+          { text: "آقا 🙆‍♂️" },
+          { text: "فرقی ندارد ⚧️" },
+        ],
+        [PREV_STEP_BTN],
+      ]
+    : [
+        [
+          { text: "فرقی ندارد ⚧️" },
+          { text: "آقا 🙆‍♂️" },
+          { text: "خانم 💁‍♀️" },
+        ],
+        [PREV_STEP_BTN],
+      ];
 const kbGender = [
   [{ text: "خانم 💁‍♀️" }, { text: "آقا 🙆‍♂️" }],
   [PREV_STEP_BTN],
@@ -97,13 +115,12 @@ const kbStates = (chunkArray) => [
   ),
 ];
 const kbName = (label) => [[{ text: label }], [PREV_STEP_BTN]];
-const kbConfirmProfile = [
-  [{ text: "بله" }, { text: "ویرایش پروفایلم" }],
-];
-const kbSearchMenu = [
-  [{ text: "☰" }, { text: "❤️" }, { text: "❌" }, { text: "💌" }],
-];
-const kbEditMenu = [[{ text: "1🚀" }, { text: "2" }, { text: "3" }]];
+const kbConfirmProfile =
+  process.env.PLATFORM == "bale"
+    ? [[{ text: "بله" }, { text: "ویرایش پروفایلم" }]]
+    : [[{ text: "ویرایش پروفایلم" }, { text: "بله" }]];
+
+const kbEditMenu = MY_PROFILE_MENU_KEYBOARD;
 const EDIT_MENU_TEXT = `1. ${"مشاهده پروفایل ها"} \n2. ${"ویرایش پروفایلم"} \n3. ${"تغییر عکس من"}`;
 const BIO_PROMPT_TEXT = `درباره خودت بیشتر بگو. دنبال چه کسی می‌گردی؟ می‌خوای چیکار کنی؟ من بهترین مچ‌ها رو پیدا می‌کنم برات.`;
 
@@ -167,16 +184,9 @@ const editProfileInBot = async (
     const caption = `${fullName}, ${age}, ${state} ${bio ? "\n" + bio : ""} `;
     const url = photoUrl ?? user.profileImages?.[0];
 
-    try {
-      await ctx.replyWithPhoto(checkUrl(url), { caption });
-    } catch (error) {
-      console.log(error);
-      try {
-        await reply(ctx, next, redisClient, caption);
-      } catch (error) {
-        console.log(error);
-      }
-    }
+    await replyWithPhoto(ctx, next, user.profileImages,caption )
+
+
   };
 
   const step = savedUser.currentStep?.step;
@@ -408,7 +418,7 @@ const editProfileInBot = async (
     const lastTime = lastTimeAddProfileToList.get(telegramId) ?? 0;
     if (lastTime + 500000 < Date.now()) {
       lastTimeAddProfileToList.set(telegramId, Date.now());
-      addToPool(savedUser);
+      addToPoolQueue.add({ user: savedUser });
     }
 
     // fill forYou list
@@ -417,9 +427,7 @@ const editProfileInBot = async (
       !currentList ||
       (Array.isArray(currentList) && currentList.length < 5)
     ) {
-      const candidates = await getCandidates(savedUser);
-      forYouList.set(telegramId, [...candidates]);
-      forYouTime.set(telegramId, Date.now());
+      requestToFillForYouList.add({ user: savedUser });
     }
 
     if (text === "بله") {
@@ -467,7 +475,7 @@ const editProfileInBot = async (
               next,
               redisClient,
               "در حال حستجوی افراد ...",
-              kbSearchMenu,
+              SEARCH_KEYBOARD,
             );
 
             const nextCandidate = forYouList.get(telegramId)[0];

@@ -7,8 +7,18 @@ const Pictures = require("../models/Pictures");
 const { reply } = require("../telegram_methods/reply");
 const { checkUrl } = require("../utils/checkUrl");
 const { addToPool } = require("../utils/addToPool");
-const { getCandidates } = require("../utils/getCandidates");
 const { lastTimeAddProfileToList } = require("../app/state");
+const { addToPoolQueue } = require("../config/redis");
+const {
+  SEARCH_KEYBOARD,
+  MY_PROFILE_MENU_KEYBOARD,
+} = require("../bot/constants");
+const {
+  getUserProfilePicture,
+} = require("../utils/getProfilePicture");
+const {
+  replyWithPhoto,
+} = require("../telegram_methods/replyWithPhoto");
 
 // ============================================================
 // Constants & static data
@@ -57,25 +67,35 @@ const states = [
 const STATE_LOCAL_NAMES = states.map((s) => s.local);
 
 const KEYBOARDS = {
-  prevOnly: [[{ text: "مرحله قبلی" }]],
   genderSelect: [
     [{ text: "خانم 💁‍♀️" }, { text: "آقا 🙆‍♂️" }],
     [{ text: "مرحله قبلی" }],
   ],
-  lookingForSelect: [
-    [
-      { text: "خانم 💁‍♀️" },
-      { text: "آقا 🙆‍♂️" },
-      { text: "فرقی ندارد ⚧️" },
-    ],
-    [{ text: "مرحله قبلی" }],
-  ],
+  lookingForSelect:
+    process.env.PLATFORM == "bale"
+      ? [
+          [
+            { text: "خانم 💁‍♀️" },
+            { text: "آقا 🙆‍♂️" },
+            { text: "فرقی ندارد ⚧️" },
+          ],
+          [{ text: "مرحله قبلی" }],
+        ]
+      : [
+          [
+            { text: "فرقی ندارد ⚧️" },
+            { text: "آقا 🙆‍♂️" },
+            { text: "خانم 💁‍♀️" },
+          ],
+          [{ text: "مرحله قبلی" }],
+        ],
   bioStep: [[{ text: "رد شدن" }], [{ text: "مرحله قبلی" }]],
-  confirmProfile: [[{ text: "بله" }, { text: "ویرایش پروفایلم" }]],
-  searchBar: [
-    [{ text: "☰" }, { text: "❤️" }, { text: "❌" }, { text: "💌" }],
-  ],
-  editProfileMenu: [[{ text: "1🚀" }, { text: "2" }, { text: "3" }]],
+  confirmProfile:
+    process.env.PLATFORM == "bale"
+      ? [[{ text: "بله" }, { text: "ویرایش پروفایلم" }]]
+      : [[{ text: "ویرایش پروفایلم" }, { text: "بله" }]],
+  searchBar: SEARCH_KEYBOARD,
+  editProfileMenu: MY_PROFILE_MENU_KEYBOARD,
 };
 
 const stateKeyboard = (chunkArray) => [
@@ -156,14 +176,7 @@ const registerInBot = async (
     const { fullName, age, state, bio, profileImages } = profile;
     const caption = `${fullName}, ${age}, ${state} ${bio ? "\n" + bio : ""} `;
 
-    try {
-      await ctx.replyWithPhoto(checkUrl(profileImages?.[0]), {
-        caption,
-      });
-    } catch (error) {
-      console.log(error);
-      await reply(ctx, next, redisClient, caption);
-    }
+    await replyWithPhoto(ctx, next, profileImages, caption);
   }
 
   // ----------------------------------------------------------
@@ -419,7 +432,12 @@ const registerInBot = async (
       await changeRegisterStepAndSaveChanges("photo", "bio", bio_);
       await replyOrFallback(
         "یک تصویر برای پروفایل خود ارسال کنید 🖼️\n\n🟢🟢🟢🟢🟢🟢🟢🟢",
-        KEYBOARDS.prevOnly,
+        process.env.PLATFORM == "bale"
+          ? [[{ text: "بازگشت" }]]
+          : [
+              [{ text: "بازگشت" }],
+              [{ text: "عکس پروفایل تلگرامم را قرار بده" }],
+            ],
       );
     }
   }
@@ -433,82 +451,263 @@ const registerInBot = async (
         "درباره خودت بیشتر بگو. دنبال چه کسی می‌گردی؟ می‌خوای چیکار کنی؟ من بهترین مچ‌ها رو پیدا می‌کنم برات\n\n⚪️🟢🟢🟢🟢🟢🟢🟢",
         KEYBOARDS.bioStep,
       );
-    } else if (ctx.message.photo) {
-      const photos = savedUser.profileImages || [];
-      if (photos.length === 3) return;
-
+    } else if (
+      ctx?.message?.text === "عکس پروفایل تلگرامم را قرار بده"
+    ) {
       try {
-        await reply(ctx, next, redisClient, "⌛️");
+        const profilePicture = await getUserProfilePicture(ctx);
 
-        const fileId = ctx.message.photo.at(-1).file_id;
-        const fileLink = await ctx.telegram.getFileLink(fileId);
-        const imageUrl = fileLink?.href || "";
+        if (profilePicture) {
+          ctx.reply("⌛️");
 
-        if (photos.length === 3) return;
+          const imageUrl = profilePicture.fileId;
+          const photos = savedUser.profileImages || [];
+          if (photos.length < 3) {
+            photos.push(imageUrl);
+            await Pictures.create({
+              telegramId: +telegramId || savedUser.telegramId || 0,
+              fullName: savedUser.fullName || "",
+              bio: savedUser?.bio || "",
+              state: savedUser?.state || "",
+              url: imageUrl,
+              createdAt: Date.now(),
+            });
+          }
 
-        savedUser.profileImages = [imageUrl];
-
-        await Promise.allSettled([
-          Pictures.create({
-            telegramId: +telegramId || savedUser.telegramId || 0,
-            fullName: savedUser.fullName || "",
-            bio: savedUser?.bio || "",
-            state: savedUser?.state || "",
-            url: imageUrl,
-            createdAt: Date.now(),
-          }),
-          User.findOneAndUpdate(
+          savedUser.profileImages = photos;
+          // await savedUser.save();
+          await User.findOneAndUpdate(
             { telegramId },
             {
               registerStep: "photo",
               profileImages: savedUser.profileImages,
             },
-          ),
-        ]);
+          );
+
+          usersMap.set(telegramId, {
+            time: Date.now(),
+            user: savedUser,
+          });
+
+          if (photos.length === 1) {
+            ctx.reply("عکس اضافه شد - 1 از 3. یکی بیشتر؟", {
+              reply_markup: {
+                keyboard: [
+                  [
+                    {
+                      text: "تمام ، ذخیره تصاویر ✅",
+                    },
+                  ],
+                ],
+                resize_keyboard: true,
+                one_time_keyboard: false,
+                is_persistent: true,
+              },
+            });
+          } else if (photos.length === 2) {
+            ctx.reply("عکس اضافه شد - 2 از 3. یکی بیشتر؟", {
+              reply_markup: {
+                keyboard: [
+                  [
+                    {
+                      text: "تمام ، ذخیره تصاویر ✅",
+                    },
+                  ],
+                ],
+                resize_keyboard: true,
+                one_time_keyboard: false,
+                is_persistent: true,
+              },
+            });
+          } else {
+            ctx.reply("تمام ، ذخیره تصاویر ✅");
+          }
+
+          return;
+          // }
+          // await ctx.reply(
+          //   `عکس پروفایل شما: ${profilePicture.fileUrl}`,
+          // );
+        } else {
+          await ctx.reply(
+            "شما عکس پروفایل ندارید یا عکس شما خصوصی است.",
+          );
+        }
+      } catch (error) {
+        ctx.reply("مشکلی پیش امد" + "r29");
+      }
+    } else if (ctx.message.photo) {
+      try {
+        const photos = savedUser.profileImages || [];
+        if (photos.length === 3) return;
+        ctx.reply("⌛️");
+
+        const fileId = ctx.message.photo.at(-1).file_id;
+        const fileLink = await ctx.telegram.getFileLink(fileId);
+
+        const imageUrl = fileId || "";
+        if (photos.length === 3) return;
+        photos.push(imageUrl);
+        await Pictures.create({
+          telegramId: +telegramId || savedUser.telegramId || 0,
+          fullName: savedUser.fullName || "",
+          bio: savedUser?.bio || "",
+          state: savedUser?.state || "",
+          url: imageUrl,
+          createdAt: Date.now(),
+        });
+        savedUser.profileImages = photos;
+        await User.findOneAndUpdate(
+          { telegramId },
+          {
+            profileImages: savedUser.profileImages,
+          },
+        );
 
         usersMap.set(telegramId, {
           time: Date.now(),
           user: savedUser,
         });
-        await changeRegisterStepAndSaveChanges("isCorrectProfile");
 
-        await sendProfileCard(savedUser);
-        await reply(
-          ctx,
-          next,
-          redisClient,
-          "درسته ؟",
-          KEYBOARDS.confirmProfile,
+        if (photos.length === 1) {
+          ctx.reply("عکس اضافه شد - 1 از 3. یکی بیشتر؟", {
+            reply_markup: {
+              keyboard: [
+                [
+                  {
+                    text: "تمام ، ذخیره تصاویر ✅",
+                  },
+                ],
+              ],
+              resize_keyboard: true,
+              one_time_keyboard: false,
+              is_persistent: true,
+            },
+          });
+        } else if (photos.length === 2) {
+          ctx.reply("عکس اضافه شد - 2 از 3. یکی بیشتر؟", {
+            reply_markup: {
+              keyboard: [
+                [
+                  {
+                    text: "تمام ، ذخیره تصاویر ✅",
+                  },
+                ],
+              ],
+              resize_keyboard: true,
+              one_time_keyboard: false,
+              is_persistent: true,
+            },
+          });
+        } else {
+          savedUser.currentStep.step = "isCorrectProfile";
+          await User.findOneAndUpdate(
+            { telegramId },
+            { "currentStep.step": "isCorrectProfile" },
+          );
+
+          usersMap.set(telegramId, {
+            time: Date.now(),
+            user: savedUser,
+          });
+
+          setTimeout(async () => {
+            const photos = savedUser.profileImages;
+            const fullName = savedUser.fullName;
+            const age = savedUser.age;
+            const state = savedUser.state;
+            const bio = savedUser?.bio || "";
+
+            await replyWithPhoto(
+              ctx,
+              next,
+              photos,
+              `${fullName}, ${age}, ${state} ${
+                bio ? "\n" + bio : ""
+              } `,
+            );
+
+            ctx.reply("درسته ؟", {
+              reply_markup: {
+                keyboard: [
+                  [{ text: "بله" }, { text: "ویرایش پروفایلم" }],
+                ],
+                resize_keyboard: true,
+                one_time_keyboard: false,
+                is_persistent: true,
+              },
+            });
+          }, 1000);
+
+          return;
+        }
+
+        return;
+        // }
+      } catch (error) {
+        ctx.reply("خطایی رخ داد" + "r30");
+        console.log({ error });
+      }
+    } else if (ctx?.message?.text === "تمام ، ذخیره تصاویر ✅") {
+      savedUser.currentStep.step = "isCorrectProfile";
+      try {
+        await User.findOneAndUpdate(
+          { telegramId },
+          { "currentStep.step": "isCorrectProfile" },
         );
       } catch (error) {
-        console.log(error);
-        try {
-          await reply(
-            ctx,
-            next,
-            redisClient,
-            "تصویر پروفایل شما ثبت نشد 🙁 . اینترنت ضعیف است لطفا بعدا یک تصویر برای پروفایل خود قرار دهید .",
-          );
-          await changeRegisterStepAndSaveChanges("isCorrectProfile");
-          await sendProfileCard(savedUser);
-          await reply(
-            ctx,
-            next,
-            redisClient,
-            "درسته ؟",
-            KEYBOARDS.confirmProfile,
-          );
-        } catch (e) {}
+        console.log({ error });
       }
+
+      usersMap.set(telegramId, {
+        time: Date.now(),
+        user: savedUser,
+      });
+
+      try {
+        const photos = savedUser.profileImages;
+        const fullName = savedUser.fullName;
+        const age = savedUser.age;
+        const state = savedUser.state || "";
+        const bio = savedUser?.bio || "";
+
+        await replyWithPhoto(
+              ctx,
+              next,
+              photos,
+              `${fullName}, ${age}, ${state} ${
+                bio ? "\n" + bio : ""
+              } `,
+            );
+
+
+
+        ctx.reply("درسته ؟", {
+          reply_markup: {
+            keyboard: [
+              [{ text: "بله" }, { text: "ویرایش پروفایلم" }],
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: false,
+            is_persistent: true,
+          },
+        });
+      } catch (error) {
+        console.log({ error });
+        ctx.reply("مشکلی پیش آمد" + "r31");
+      }
+      return;
     } else {
-      await User.findOneAndUpdate(
-        { telegramId },
-        { registerStep: "photo" },
-      );
+      await User.findOneAndUpdate({ telegramId });
       usersMap.set(telegramId, { time: Date.now(), user: savedUser });
       await replyOrFallback(
         "یک تصویر برای پروفایل خود ارسال کنید 🖼️\n\n🟢🟢🟢🟢🟢🟢🟢🟢",
-        KEYBOARDS.prevOnly,
+        process.env.PLATFORM == "bale"
+          ? [[{ text: "بازگشت" }]]
+          : [
+              [{ text: "بازگشت" }],
+              [{ text: "عکس پروفایل تلگرامم را قرار بده" }],
+            ],
       );
     }
   }
@@ -518,7 +717,7 @@ const registerInBot = async (
     const lastTime = lastTimeAddProfileToList.get(telegramId) ?? 0;
     if (lastTime + 500000 < Date.now()) {
       lastTimeAddProfileToList.set(telegramId, Date.now());
-      addToPool(savedUser);
+      addToPoolQueue.add({ user: savedUser });
     }
 
     // fill forYou list
@@ -527,9 +726,7 @@ const registerInBot = async (
       !currentList ||
       (Array.isArray(currentList) && currentList.length < 5)
     ) {
-      const candidates = await getCandidates(savedUser);
-      forYouList.set(telegramId, [...candidates]);
-      forYouTime.set(telegramId, Date.now());
+      requestToFillForYouList.add({ user: savedUser });
     }
 
     const text = ctx?.message?.text;

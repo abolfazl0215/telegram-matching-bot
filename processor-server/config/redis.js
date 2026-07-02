@@ -94,6 +94,12 @@ const sendMessageToAllQueue = createQueue("sendMessageToAllQueue");
 const cleanupOldUsersQueue = createQueue("cleanupOldUsersQueue");
 const goToNotificationMenu = createQueue("goToNotificationMenu");
 
+const addToPoolQueue = createQueue("addToPoolQueue");
+
+const requestToFillForYouList = createQueue(
+  "requestToFillForYouList",
+);
+const fillForYouList = createQueue("fillForYouList");
 
 module.exports = {
   redisClient,
@@ -102,5 +108,8 @@ module.exports = {
   sendMessageToAllQueue,
   cleanupOldUsersQueue,
   goToNotificationMenu,
+  addToPoolQueue,
+  requestToFillForYouList,
+  fillForYouList,
   logger,
 };

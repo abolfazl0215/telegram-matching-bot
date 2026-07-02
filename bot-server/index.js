@@ -7,6 +7,10 @@ const {
   redisClient,
   cleanupOldUsersQueue,
   newLikeQueue,
+  addToPoolQueue,
+  requestToFillForYouList,
+  fillForYouList,
+  logger,
 } = require("./config/redis");
 const { fillPool } = require("./utils/fillPool");
 const { updatePoolInRedis } = require("./utils/updatePoolInRedis");
@@ -25,7 +29,6 @@ const {
   getNowTime,
   cleanupOldUsersFromMapAndSaveToDB,
 } = require("./app/session");
-const { addToPool } = require("./utils/addToPool");
 const { registerLocalQueueWorkers } = require("./app/queueWorkers");
 const bodyParser = require("body-parser");
 const { encrypt } = require("./utils/encrypt");
@@ -34,14 +37,23 @@ const chunkArray = require("./utils/chunkArray");
 const {
   generateInviteCode,
 } = require("./utils/generateInviteCode.js");
-const { getCandidates } = require("./utils/getCandidates.js");
 const { changePhoto } = require("./components/changePhoto.js");
 const { registerPaymentHandlers } = require("./bot/payments.js");
 const { removeFromExplore } = require("./utils/removeFromExplore.js");
 
 const { replyBot } = require("./telegram_methods/replyBot.js");
-const { AGES } = require("./app/config.js");
+const { AGES, BOT_INVITE_BASE } = require("./app/config.js");
 const { registerReportHandlers } = require("./bot/reports.js");
+const editProfileInBot = require("./components/editProfileInBot.js");
+const {
+  SEARCH_KEYBOARD,
+  MENU_KEYBOARD,
+  NOTIFICATION_MENU_KEYBOARD,
+  MY_PROFILE_MENU_KEYBOARD,
+} = require("./bot/constants.js");
+const {
+  replyWithPhoto,
+} = require("./telegram_methods/replyWithPhoto.js");
 
 const {
   usersMap,
@@ -103,6 +115,53 @@ setInterval(async () => {
   await fillUsersArrayFromRedis();
 }, 60000);
 
+fillForYouList.process(2, async (job) => {
+  const { telegramId, candidates } = job.data;
+  try {
+    forYouList.set(+telegramId, [...candidates]);
+    forYouTime.set(+telegramId, Date.now());
+  } catch (error) {
+    console.error("Error processing add to pool :", error);
+  }
+});
+
+// Helper function - یک بار تعریف کن بیرون از handler
+function waitForForYouList(
+  telegramId,
+  { timeout = 15000, interval = 500 } = {},
+) {
+  return new Promise((resolve, reject) => {
+    // اگر از همان ابتدا پر بود، فوری resolve کن
+    if (
+      Array.isArray(forYouList.get(telegramId)) &&
+      forYouList.get(telegramId).length >= 2
+    ) {
+      return resolve(forYouList.get(telegramId));
+    }
+
+    const startTime = Date.now();
+
+    const check = setInterval(() => {
+      const list = forYouList.get(telegramId);
+
+      if (Array.isArray(list) && list.length >= 2) {
+        clearInterval(check);
+        resolve(list);
+        return;
+      }
+
+      if (Date.now() - startTime >= timeout) {
+        clearInterval(check);
+        reject(
+          new Error(
+            `TIMEOUT: forYouList for ${telegramId} not ready after ${timeout}ms`,
+          ),
+        );
+      }
+    }, interval);
+  });
+}
+
 const processStatement = async (ctx, next) => {
   const telegramId = ctx?.from?.id;
   const telegramName = ctx?.from?.first_name;
@@ -110,56 +169,58 @@ const processStatement = async (ctx, next) => {
   const isBot = ctx?.from?.is_bot;
   const inviteCode = ctx?.startPayload;
 
+  console.log("is bale :", process.env.PLATFORM == "bale");
+
   // set userName for telegram
-  if (process.env.PLATFORM == "telegram") {
-    if (!userName) {
-      await reply(
-        ctx,
-        next,
-        redisClient,
-        "تلگرام شما باید یک نام کاربری (آیدی) داشته باشد \n\n- لطفا ابتدا یک نام کاربری انتخاب کنید",
-        [],
-        [
-          [
-            {
-              text: "انجام دادم ✅",
-              callback_data: "set_telegram_username",
-            },
-          ],
-        ],
-      );
-    } else {
-      const data_ = {
-        telegramId: String(telegramId),
-        userName: userName,
-      };
+  // if (process.env.PLATFORM == "telegram") {
+  //   if (!userName) {
+  //     await reply(
+  //       ctx,
+  //       next,
+  //       redisClient,
+  //       "تلگرام شما باید یک نام کاربری (آیدی) داشته باشد \n\n- لطفا ابتدا یک نام کاربری انتخاب کنید",
+  //       [],
+  //       [
+  //         [
+  //           {
+  //             text: "انجام دادم ✅",
+  //             callback_data: "set_telegram_username",
+  //           },
+  //         ],
+  //       ],
+  //     );
+  //   } else {
+  //     const data_ = {
+  //       telegramId: String(telegramId),
+  //       userName: userName,
+  //     };
 
-      const encryptedData = encrypt(data_);
+  //     const encryptedData = encrypt(data_);
 
-      await reply(
-        ctx,
-        next,
-        redisClient,
-        "از طریق دکمه زیر وارد برنامه شوید 👇🏻",
-        [],
-        [
-          [
-            {
-              text: "ورود به برنامه 😎 (با اینترنت بین الملل)",
-              url: `https://redirect-to-app-delta.vercel.app/open?data=${encryptedData}`,
-            },
-          ],
-          [
-            {
-              text: "ورود به برنامه 😎 (با اینترنت داخلی)",
-              url: `https://pounes.ir/open?data=${encryptedData}`,
-            },
-          ],
-        ],
-      );
-    }
-    return;
-  }
+  //     await reply(
+  //       ctx,
+  //       next,
+  //       redisClient,
+  //       "از طریق دکمه زیر وارد برنامه شوید 👇🏻",
+  //       [],
+  //       [
+  //         [
+  //           {
+  //             text: "ورود به برنامه 😎 (با اینترنت بین الملل)",
+  //             url: `https://redirect-to-app-delta.vercel.app/open?data=${encryptedData}`,
+  //           },
+  //         ],
+  //         [
+  //           {
+  //             text: "ورود به برنامه 😎 (با اینترنت داخلی)",
+  //             url: `https://pounes.ir/open?data=${encryptedData}`,
+  //           },
+  //         ],
+  //       ],
+  //     );
+  //   }
+  //   return;
+  // }
 
   // send Message after success payment <<<<<<<<<<
   if (ctx.message.successful_payment) {
@@ -197,14 +258,7 @@ const processStatement = async (ctx, next) => {
             next,
             redisClient,
             `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-            [
-              [
-                { text: "1 🚀" },
-                { text: "2" },
-                { text: "3" },
-                { text: "4" },
-              ],
-            ],
+            MENU_KEYBOARD,
           );
         } catch (error) {
           console.log(error);
@@ -298,11 +352,11 @@ const processStatement = async (ctx, next) => {
   // if user changed userName update it in database >>>>>>>>>>>
 
   // after 8 minutes and 20 seconds add profile to forYou queue again and update last time <<<
-  if (existingUser?.currentStep?.flow !== "register") {
+  if (existingUser?.fullName) {
     const lastTime = lastTimeAddProfileToList.get(telegramId) ?? 0;
     if (lastTime + 500000 < Date.now()) {
       lastTimeAddProfileToList.set(telegramId, Date.now());
-      addToPool(existingUser);
+      addToPoolQueue.add({ user: existingUser });
     }
   }
   // after 8 minutes and 20 seconds add profile to forYou queue again and update last time >>>
@@ -315,16 +369,26 @@ const processStatement = async (ctx, next) => {
       !currentList ||
       !Array.isArray(currentList) ||
       currentList.length <= 3;
-    if (
-      needsRefill &&
-      existingUser?.currentStep?.flow !== "register"
-    ) {
-      const candidates = await getCandidates(existingUser);
-      forYouList.set(telegramId, [...candidates]);
-      forYouTime.set(telegramId, Date.now());
+    if (needsRefill && existingUser?.fullName) {
+      requestToFillForYouList.add({ user: existingUser });
     }
   }
   // Check if forYou list needs to be refilled and refill if necessary and add to suggestQueue >>>
+
+  // wait for fill forYouList
+  if (existingUser?.fullName) {
+    try {
+      await waitForForYouList(telegramId, {
+        timeout: 15000,
+        interval: 500,
+      });
+    } catch (err) {
+      logger.warn(`[ForYou] ${err.message}`);
+      await ctx.reply("در حال حاضر پروفایلی برای نمایش وجود ندارد.");
+      return;
+    }
+  }
+  // wait for fill forYouList >>>>>
 
   if (existingUser) {
     const userFlow = existingUser?.currentStep?.flow;
@@ -386,7 +450,7 @@ const processStatement = async (ctx, next) => {
       if (userStep === "search") {
         // check limit for get candidates _________________________ <<<<<<
         if (
-          ctx?.message?.text === "❤️" ||
+          ctx?.message?.text === "💚" ||
           ctx?.message?.text === "❌" ||
           ctx?.message?.text === "💌"
         ) {
@@ -445,14 +509,16 @@ const processStatement = async (ctx, next) => {
               redisClient,
               message,
               [],
-              [
-                [
-                  {
-                    text: "خرید اشتراک 💎",
-                    callback_data: "buy_like",
-                  },
-                ],
-              ],
+              isPremium
+                ? []
+                : [
+                    [
+                      {
+                        text: "خرید اشتراک 💎",
+                        callback_data: "buy_like",
+                      },
+                    ],
+                  ],
             );
             return;
           }
@@ -463,7 +529,7 @@ const processStatement = async (ctx, next) => {
 
         // calculate daily likes limition ________________________________<<<
         if (
-          ctx?.message?.text === "❤️" ||
+          ctx?.message?.text === "💚" ||
           ctx?.message?.text === "💌"
         ) {
           const likeCountCalculateByGender =
@@ -510,7 +576,7 @@ const processStatement = async (ctx, next) => {
                   [
                     [
                       {
-                        text: "خرید لایک ❤️",
+                        text: "خرید لایک 💚",
                         callback_data: "buy_like",
                       },
                     ],
@@ -556,7 +622,7 @@ const processStatement = async (ctx, next) => {
 
         // check if user has a userName ___________________ <<<
         if (
-          ctx?.message?.text === "❤️" ||
+          ctx?.message?.text === "💚" ||
           ctx?.message?.text === "💌"
         ) {
           // if user is not have username ask to fill it <<<<<<<<<<<<<<
@@ -621,6 +687,7 @@ const processStatement = async (ctx, next) => {
         }
         // check if user has a userName ___________________ >>>
 
+
         if (ctx?.message?.text === "☰") {
           try {
             existingUser.currentStep.step = "menu";
@@ -636,19 +703,12 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              [
-                [
-                  { text: "1 🚀" },
-                  { text: "2" },
-                  { text: "3" },
-                  { text: "4" },
-                ],
-              ],
+              MENU_KEYBOARD,
             );
           } catch (error) {
             console.log(error);
           }
-        } else if (ctx?.message?.text === "❤️") {
+        } else if (ctx?.message?.text === "💚") {
           // newLike for notification *********************
 
           //  add to liked by me _____________________________ <<<<<
@@ -696,8 +756,8 @@ const processStatement = async (ctx, next) => {
           // -- add to received likes
 
           newLikeQueue.add({
-            telegramId: 2047192929,
-            // telegramId: +forYouList.get(telegramId)[0]?.telegramId,
+            // telegramId: 2047192929,
+            telegramId: +forYouList.get(telegramId)[0]?.telegramId,
             liker: existingUser,
           });
 
@@ -707,7 +767,7 @@ const processStatement = async (ctx, next) => {
                 ctx,
                 next,
                 redisClient,
-                "❤️ : لایک\n❌ : رد کردن\n💌 : لایک به همراه پیام\n☰ : منو\n\nوقتی کاربری را لایک میکنید ، لایک شما برای او ارسال میشود و اگر اوهم شما را لایک کند ، متصل میشوید .",
+                "💚 : لایک\n❌ : رد کردن\n💌 : لایک به همراه پیام\n☰ : منو\n\nوقتی کاربری را لایک میکنید ، لایک شما برای او ارسال میشود و اگر اوهم شما را لایک کند ، متصل میشوید .",
               );
               existingUser.forTutorial.firstLike = 1;
               usersMap.set(telegramId, {
@@ -755,30 +815,14 @@ const processStatement = async (ctx, next) => {
           const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
           const isNew = Date.now() - (createAt || 1) < twoDaysMs;
 
-          try {
-            await ctx.replyWithPhoto(
-              checkUrl(photos[0]),
-
-              {
-                caption: `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
-                  bio ? "\n" + bio : ""
-                } \n/user_${inviteCode_from_forYouList || "not_found"}`,
-              },
-            );
-          } catch (error) {
-            try {
-              await reply(
-                ctx,
-                next,
-                redisClient,
-                `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
-                  bio ? "\n" + bio : ""
-                } \n/user_${inviteCode_from_forYouList || "not_found"}`,
-              );
-            } catch (error) {
-              console.log(error);
-            }
-          }
+          await replyWithPhoto(
+            ctx,
+            next,
+            photos,
+            `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
+              bio ? "\n" + bio : ""
+            } \n/user_${inviteCode_from_forYouList || "not_found"}`,
+          );
 
           usersMap.set(telegramId, {
             time: Date.now(),
@@ -794,7 +838,7 @@ const processStatement = async (ctx, next) => {
                 ctx,
                 next,
                 redisClient,
-                "❤️ : لایک\n❌ : رد کردن\n💌 : لایک به همراه پیام\n☰ : منو\n\nوقتی کاربری را لایک میکنید ، لایک شما برای او ارسال میشود و اگر اوهم شما را لایک کند ، متصل میشوید .",
+                "💚 : لایک\n❌ : رد کردن\n💌 : لایک به همراه پیام\n☰ : منو\n\nوقتی کاربری را لایک میکنید ، لایک شما برای او ارسال میشود و اگر اوهم شما را لایک کند ، متصل میشوید .",
               );
             } catch (error) {
               console.log(error);
@@ -876,30 +920,15 @@ const processStatement = async (ctx, next) => {
           const photos = profileImages;
           const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
           const isNew = Date.now() - (createAt || 1) < twoDaysMs;
-          try {
-            await ctx.replyWithPhoto(
-              checkUrl(photos[0]),
 
-              {
-                caption: `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
-                  bio ? "\n" + bio : ""
-                } \n/user_${inviteCode_from_forYouList || "not_found"}`,
-              },
-            );
-          } catch (error) {
-            try {
-              await reply(
-                ctx,
-                next,
-                redisClient,
-                `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
-                  bio ? "\n" + bio : ""
-                } \n/user_${inviteCode_from_forYouList || "not_found"}`,
-              );
-            } catch (error) {
-              console.log(error);
-            }
-          }
+          await replyWithPhoto(
+            ctx,
+            next,
+            photos,
+            `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
+              bio ? "\n" + bio : ""
+            } \n/user_${inviteCode_from_forYouList || "not_found"}`,
+          );
 
           usersMap.set(telegramId, {
             time: Date.now(),
@@ -924,14 +953,13 @@ const processStatement = async (ctx, next) => {
           }
         } else {
           try {
-            await reply(ctx, next, redisClient, "🧐👇🏽", [
-              [
-                { text: "☰" },
-                { text: "❤️" },
-                { text: "❌" },
-                { text: "💌" },
-              ],
-            ]);
+            await reply(
+              ctx,
+              next,
+              redisClient,
+              "🧐👇🏽",
+              SEARCH_KEYBOARD,
+            );
           } catch (error) {
             console.log(error);
           }
@@ -976,45 +1004,28 @@ const processStatement = async (ctx, next) => {
           const isNew = Date.now() - (createAt || 1) < twoDaysMs;
 
           try {
-            await reply(ctx, next, redisClient, "🔎", [
-              [
-                { text: "☰" },
-                { text: "❤️" },
-                { text: "❌" },
-                { text: "💌" },
-              ],
-            ]);
+            await reply(
+              ctx,
+              next,
+              redisClient,
+              "🔎",
+              SEARCH_KEYBOARD,
+            );
           } catch (_) {}
 
-          try {
-            await ctx.replyWithPhoto(
-              checkUrl(photos[0]),
-
-              {
-                caption: `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
-                  bio ? "\n" + bio : ""
-                } \n/user_${inviteCode_from_forYouList || "not_found"}`,
-              },
-            );
-          } catch (error) {
-            try {
-              await reply(
-                ctx,
-                next,
-                redisClient,
-                `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
-                  bio ? "\n" + bio : ""
-                } \n/user_${inviteCode_from_forYouList || "not_found"}`,
-              );
-            } catch (error) {
-              console.log(error);
-            }
-          }
+          await replyWithPhoto(
+            ctx,
+            next,
+            photos,
+            `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
+              bio ? "\n" + bio : ""
+            } \n/user_${inviteCode_from_forYouList || "not_found"}`,
+          );
         } else if (
           ctx?.message?.text &&
           ctx?.message?.text != "❌" &&
           ctx?.message?.text != "💌" &&
-          ctx?.message?.text != "❤️"
+          ctx?.message?.text != "💚"
         ) {
           if (
             forYouList.get(telegramId) &&
@@ -1081,7 +1092,7 @@ const processStatement = async (ctx, next) => {
                 ctx,
                 next,
                 redisClient,
-                "❤️ : لایک\n❌ : رد کردن\n💌 : لایک به همراه پیام\n☰ : منو\n\nوقتی کاربری را لایک میکنید ، لایک شما برای او ارسال میشود و اگر اوهم شما را لایک کند ، متصل میشوید .",
+                "💚 : لایک\n❌ : رد کردن\n💌 : لایک به همراه پیام\n☰ : منو\n\nوقتی کاربری را لایک میکنید ، لایک شما برای او ارسال میشود و اگر اوهم شما را لایک کند ، متصل میشوید .",
               );
               existingUser.forTutorial.firstLike = 1;
               usersMap.set(telegramId, {
@@ -1098,14 +1109,7 @@ const processStatement = async (ctx, next) => {
             next,
             redisClient,
             "لایک شما به همراه پیام ارسال شد ✅",
-            [
-              [
-                { text: "☰" },
-                { text: "❤️" },
-                { text: "❌" },
-                { text: "💌" },
-              ],
-            ],
+            SEARCH_KEYBOARD,
           );
 
           existingUser.currentStep.step = "search";
@@ -1146,30 +1150,14 @@ const processStatement = async (ctx, next) => {
           const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
           const isNew = Date.now() - (createAt || 1) < twoDaysMs;
 
-          try {
-            await ctx.replyWithPhoto(
-              checkUrl(photos[0]),
-
-              {
-                caption: `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
-                  bio ? "\n" + bio : ""
-                } \n/user_${inviteCode_from_forYouList || "not_found"}`,
-              },
-            );
-          } catch (error) {
-            try {
-              await reply(
-                ctx,
-                next,
-                redisClient,
-                `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
-                  bio ? "\n" + bio : ""
-                } \n/user_${inviteCode_from_forYouList || "not_found"}`,
-              );
-            } catch (error) {
-              console.log(error);
-            }
-          }
+          await replyWithPhoto(
+            ctx,
+            next,
+            photos,
+            `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
+              bio ? "\n" + bio : ""
+            } \n/user_${inviteCode_from_forYouList || "not_found"}`,
+          );
 
           usersMap.set(telegramId, {
             time: Date.now(),
@@ -1195,14 +1183,13 @@ const processStatement = async (ctx, next) => {
               time: Date.now(),
               user: existingUser,
             });
-            await reply(ctx, next, redisClient, "🔎", [
-              [
-                { text: "☰" },
-                { text: "❤️" },
-                { text: "❌" },
-                { text: "💌" },
-              ],
-            ]);
+            await reply(
+              ctx,
+              next,
+              redisClient,
+              "🔎",
+              SEARCH_KEYBOARD,
+            );
 
             const {
               fullName,
@@ -1218,26 +1205,14 @@ const processStatement = async (ctx, next) => {
             const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
             const isNew = Date.now() - (createAt || 1) < twoDaysMs;
 
-            try {
-              await ctx.replyWithPhoto(checkUrl(photos[0]), {
-                caption: `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
-                  bio ? "\n" + bio : ""
-                } \n/user_${inviteCode_from_forYouList || "not_found"}`,
-              });
-            } catch (error) {
-              try {
-                await reply(
-                  ctx,
-                  next,
-                  redisClient,
-                  `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
-                    bio ? "\n" + bio : ""
-                  } \n/user_${inviteCode_from_forYouList || "not_found"}`,
-                );
-              } catch (error) {
-                console.log(error);
-              }
-            }
+            await replyWithPhoto(
+              ctx,
+              next,
+              photos,
+              `${fullName} ${isNew ? " (کاربر جدید) " : ""}, ${age}, ${state} ${
+                bio ? "\n" + bio : ""
+              } \n/user_${inviteCode_from_forYouList || "not_found"}`,
+            );
           } catch (error) {
             console.log({ error });
           }
@@ -1250,26 +1225,14 @@ const processStatement = async (ctx, next) => {
             const bio = existingUser?.bio ?? "";
             const inviteCode = existingUser.inviteCode;
 
-            try {
-              await ctx.replyWithPhoto(checkUrl(photos[0]), {
-                caption: `${fullName}, ${age}, ${state} ${
-                  bio ? "\n" + bio : ""
-                } \n/user_${inviteCode || "not_found"}`,
-              });
-            } catch (error) {
-              try {
-                await reply(
-                  ctx,
-                  next,
-                  redisClient,
-                  `${fullName}, ${age}, ${state} ${
-                    bio ? "\n" + bio : ""
-                  } \n/user_${inviteCode || "not_found"}`,
-                );
-              } catch (error) {
-                console.log(error);
-              }
-            }
+            await replyWithPhoto(
+              ctx,
+              next,
+              photos,
+              `${fullName}, ${age}, ${state} ${
+                bio ? "\n" + bio : ""
+              } \n/user_${inviteCode || "not_found"}`,
+            );
 
             existingUser.currentStep.flow = "editProfile";
             existingUser.currentStep.step = "editProfileMenu";
@@ -1284,7 +1247,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"} \n2. ${"ویرایش پروفایلم"} \n3. ${"تغییر عکس من"}`,
-              [[{ text: "1🚀" }, { text: "2" }, { text: "3" }]],
+              MY_PROFILE_MENU_KEYBOARD,
             );
           } catch (error) {
             console.log({ error });
@@ -1351,15 +1314,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              [
-                [
-                  { text: "1 🚀" },
-                  { text: "2" },
-                  { text: "3" },
-                  { text: "4" },
-                  //{ text: "5" },
-                ],
-              ],
+              MENU_KEYBOARD,
             );
           } catch (error) {
             console.log({ error });
@@ -1378,14 +1333,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              [
-                [
-                  { text: "1 🚀" },
-                  { text: "2" },
-                  { text: "3" },
-                  { text: "4" },
-                ],
-              ],
+              MENU_KEYBOARD,
             );
           } catch (error) {
             console.log(error);
@@ -1423,14 +1371,7 @@ const processStatement = async (ctx, next) => {
                 next,
                 redisClient,
                 `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                [
-                  [
-                    { text: "1 🚀" },
-                    { text: "2" },
-                    { text: "3" },
-                    { text: "4" },
-                  ],
-                ],
+                MENU_KEYBOARD,
               );
             } catch (error) {
               console.log(error);
@@ -1465,15 +1406,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              [
-                [
-                  { text: "1 🚀" },
-                  { text: "2" },
-                  { text: "3" },
-                  { text: "4" },
-                  //{ text: "5" },
-                ],
-              ],
+              MENU_KEYBOARD,
             );
           } catch (error) {
             console.log({ error });
@@ -1660,14 +1593,7 @@ const processStatement = async (ctx, next) => {
                 next,
                 redisClient,
                 `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                [
-                  [
-                    { text: "1 🚀" },
-                    { text: "2" },
-                    { text: "3" },
-                    { text: "4" },
-                  ],
-                ],
+                MENU_KEYBOARD,
               );
             } catch (error) {
               console.log(error);
@@ -1734,14 +1660,7 @@ const processStatement = async (ctx, next) => {
                 next,
                 redisClient,
                 `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                [
-                  [
-                    { text: "1 🚀" },
-                    { text: "2" },
-                    { text: "3" },
-                    { text: "4" },
-                  ],
-                ],
+                MENU_KEYBOARD,
               );
             } catch (error) {
               console.log(error);
@@ -1761,14 +1680,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              [
-                [
-                  { text: "1 🚀" },
-                  { text: "2" },
-                  { text: "3" },
-                  { text: "4" },
-                ],
-              ],
+              MENU_KEYBOARD,
             );
           } catch (error) {
             console.log(error);
@@ -1785,14 +1697,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              [
-                [
-                  { text: "1 🚀" },
-                  { text: "2" },
-                  { text: "3" },
-                  { text: "4" },
-                ],
-              ],
+              MENU_KEYBOARD,
             );
           } catch (error) {
             console.log(error);
@@ -1811,7 +1716,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `${"افرادی شما را لایک کردند. یه نگاهی بنداز "}\n\n1. ${"نمایش"}\n2. ${"حالت خواب"}`,
-              [[{ text: "1 🚀" }, { text: "2" }]],
+              NOTIFICATION_MENU_KEYBOARD,
             );
           } catch (error) {
             console.log({ error });
@@ -1845,7 +1750,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `${"افرادی شما را لایک کردند. یه نگاهی بنداز "}\n\n1. ${"نمایش"}\n2. ${"حالت خواب"}`,
-              [[{ text: "1 🚀" }, { text: "2" }]],
+              NOTIFICATION_MENU_KEYBOARD,
             );
           } catch (error) {
             console.log({ error });
@@ -1886,7 +1791,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               "افراد زیر شما را لایک کرده اند 🥰👇🏽\n\nهر کدام را لایک کنید به او متصل میشوید و میتوانید با او چت کنید 🗨️ \n\nدر حال جستجوی لایک ها ...",
-              [[{ text: "❌" }, { text: "❤️" }]],
+              [[{ text: "❌" }, { text: "💚" }]],
             );
 
             const getData = await redisClient.getBuffer(`newLikes`);
@@ -1913,26 +1818,14 @@ const processStatement = async (ctx, next) => {
                 const inviteCode_ =
                   userFromRedis.likers[0].inviteCode;
 
-                try {
-                  await ctx.replyWithPhoto(checkUrl(photos[0]), {
-                    caption: `${fullName}, ${age}, ${state} ${
-                      bio ? "\n" + bio : ""
-                    } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
-                  });
-                } catch (error) {
-                  try {
-                    await reply(
-                      ctx,
-                      next,
-                      redisClient,
-                      `${fullName}, ${age}, ${state} ${
-                        bio ? "\n" + bio : ""
-                      } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
-                    );
-                  } catch (error) {
-                    console.log(error);
-                  }
-                }
+                await replyWithPhoto(
+                  ctx,
+                  next,
+                  photos,
+                  `${fullName}, ${age}, ${state} ${
+                    bio ? "\n" + bio : ""
+                  } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
+                );
               }
             } else {
               try {
@@ -1954,14 +1847,7 @@ const processStatement = async (ctx, next) => {
                   next,
                   redisClient,
                   `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                  [
-                    [
-                      { text: "1 🚀" },
-                      { text: "2" },
-                      { text: "3" },
-                      { text: "4" },
-                    ],
-                  ],
+                  MENU_KEYBOARD,
                 );
               } catch (error) {
                 console.log(error);
@@ -2003,7 +1889,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `${"افرادی شما را لایک کردند. یه نگاهی بنداز "}\n\n1. ${"نمایش"}\n2. ${"حالت خواب"}`,
-              [[{ text: "1 🚀" }, { text: "2" }]],
+              NOTIFICATION_MENU_KEYBOARD,
             );
           } catch (error) {
             console.log(error);
@@ -2069,7 +1955,7 @@ const processStatement = async (ctx, next) => {
         }
         // if user is not have username ask to fill it >>>>>>>>>>>>>>
         // if user is not have username ask to fill it >>>>>>>>>>>>>>
-        if (ctx?.message?.text === "❤️") {
+        if (ctx?.message?.text === "💚") {
           try {
             if (!existingUser.matches) existingUser.matches = [];
             // const getData = await redisClient.getBuffer(`newLikes`);
@@ -2340,26 +2226,14 @@ const processStatement = async (ctx, next) => {
                   const inviteCode_ = list[0].inviteCode;
                   const textMessage = list[0]?.message;
 
-                  try {
-                    await ctx.replyWithPhoto(checkUrl(photos[0]), {
-                      caption: `${fullName}, ${age}, ${state} ${
-                        bio ? "\n" + bio : ""
-                      } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
-                    });
-                  } catch (error) {
-                    try {
-                      await reply(
-                        ctx,
-                        next,
-                        redisClient,
-                        `${fullName}, ${age}, ${state} ${
-                          bio ? "\n" + bio : ""
-                        } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
-                      );
-                    } catch (error) {
-                      console.log(error);
-                    }
-                  }
+                  await replyWithPhoto(
+                    ctx,
+                    next,
+                    photos,
+                    `${fullName}, ${age}, ${state} ${
+                      bio ? "\n" + bio : ""
+                    } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
+                  );
                 } else {
                   try {
                     await reply(
@@ -2380,14 +2254,7 @@ const processStatement = async (ctx, next) => {
                       next,
                       redisClient,
                       `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                      [
-                        [
-                          { text: "1 🚀" },
-                          { text: "2" },
-                          { text: "3" },
-                          { text: "4" },
-                        ],
-                      ],
+                      MENU_KEYBOARD,
                     );
                   } catch (error) {
                     console.log(error);
@@ -2412,14 +2279,7 @@ const processStatement = async (ctx, next) => {
                     next,
                     redisClient,
                     `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                    [
-                      [
-                        { text: "1 🚀" },
-                        { text: "2" },
-                        { text: "3" },
-                        { text: "4" },
-                      ],
-                    ],
+                    MENU_KEYBOARD,
                   );
                 } catch (error) {
                   console.log(error);
@@ -2448,14 +2308,7 @@ const processStatement = async (ctx, next) => {
                   next,
                   redisClient,
                   `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                  [
-                    [
-                      { text: "1 🚀" },
-                      { text: "2" },
-                      { text: "3" },
-                      { text: "4" },
-                    ],
-                  ],
+                  MENU_KEYBOARD,
                 );
               } catch (error) {
                 console.log(error);
@@ -2527,36 +2380,14 @@ const processStatement = async (ctx, next) => {
                   const inviteCode_ = list[0].inviteCode;
                   const textMessage = list[0]?.message;
 
-                  try {
-                    // const buffer = await getPic(photos[0]);
-                    await ctx.replyWithPhoto(
-                      checkUrl(photos[0]),
-
-                      {
-                        caption: `${fullName}, ${age}, ${state} ${
-                          bio ? "\n" + bio : ""
-                        } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
-                      },
-                    );
-                  } catch (error) {
-                    try {
-                      // await ctx.reply(
-                      //   `${fullName}, ${age}, ${state} ${
-                      //     bio ? "\n" + bio : ""
-                      //   } \n/user_${inviteCode_ || "not_found"}`,
-                      // );
-                      await reply(
-                        ctx,
-                        next,
-                        redisClient,
-                        `${fullName}, ${age}, ${state} ${
-                          bio ? "\n" + bio : ""
-                        } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
-                      );
-                    } catch (error) {
-                      console.log(error);
-                    }
-                  }
+                  await replyWithPhoto(
+                    ctx,
+                    next,
+                    photos,
+                    `${fullName}, ${age}, ${state} ${
+                      bio ? "\n" + bio : ""
+                    } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
+                  );
                 } else {
                   try {
                     await reply(
@@ -2576,14 +2407,7 @@ const processStatement = async (ctx, next) => {
                       next,
                       redisClient,
                       `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                      [
-                        [
-                          { text: "1 🚀" },
-                          { text: "2" },
-                          { text: "3" },
-                          { text: "4" },
-                        ],
-                      ],
+                      MENU_KEYBOARD,
                     );
                   } catch (error) {
                     console.log(error);
@@ -2608,14 +2432,7 @@ const processStatement = async (ctx, next) => {
                     next,
                     redisClient,
                     `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                    [
-                      [
-                        { text: "1 🚀" },
-                        { text: "2" },
-                        { text: "3" },
-                        { text: "4" },
-                      ],
-                    ],
+                    MENU_KEYBOARD,
                   );
                 } catch (error) {
                   console.log(error);
@@ -2643,14 +2460,7 @@ const processStatement = async (ctx, next) => {
                   next,
                   redisClient,
                   `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                  [
-                    [
-                      { text: "1 🚀" },
-                      { text: "2" },
-                      { text: "3" },
-                      { text: "4" },
-                    ],
-                  ],
+                  MENU_KEYBOARD,
                 );
               } catch (error) {
                 console.log(error);
@@ -2662,7 +2472,7 @@ const processStatement = async (ctx, next) => {
         } else {
           try {
             await reply(ctx, next, redisClient, "لایک ها :", [
-              [{ text: "❌" }, { text: "❤️" }],
+              [{ text: "❌" }, { text: "💚" }],
             ]);
           } catch (error) {
             console.log(error);
@@ -3121,9 +2931,6 @@ registerReportHandlers(bot, usersMap);
 
 const PORT = 3005;
 async function startServer() {
-  console.time("ّFill pool started in");
-  await fillPool();
-  console.timeEnd("ّFill pool started in");
 
   // newLikes in redis
   await fillUsersArrayFromRedis();
@@ -3133,12 +2940,6 @@ async function startServer() {
     .catch((err) => console.error("Bot launch error:", err));
   console.log("🤖 Bot launched after pool filled");
 
-  setInterval(
-    async () => {
-      await updatePoolInRedis();
-    },
-    5 * 60 * 1000,
-  );
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`\n🚀 Pounes Matching Simulator v2.2`);

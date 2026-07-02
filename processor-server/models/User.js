@@ -8,6 +8,7 @@ const userSchema = new mongoose.Schema({
     unique: true,
     index: true,
   },
+
   fullName: { type: String },
   userName: { type: String },
   inviteCode: { type: String },

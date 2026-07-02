@@ -1,3 +1,4 @@
+const { NOTIFICATION_MENU_KEYBOARD } = require("../app/constants");
 const { goToNotificationMenu } = require("../config/redis");
 const User = require("../models/User");
 const { replyBot } = require("../telegram_methods/replyBot");
@@ -133,9 +134,7 @@ async function processSingleUser(
           return console.log(
             "user is block (check new like for send notif)",
           );
-        await replyBot(telegramId__, redisClient, messageText, [
-          [{ text: "1 🚀" }, { text: "2" }],
-        ]);
+        await replyBot(telegramId__, redisClient, messageText, NOTIFICATION_MENU_KEYBOARD);
 
         if (findUser) {
           findUser.currentStep.flow = "bot";
