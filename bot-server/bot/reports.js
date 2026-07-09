@@ -57,7 +57,7 @@ async function reportAction(reportType, telegramId, ctx, next, usersMap) {
       await reply(ctx, next, redisClient, "گزارش شما ثبت شد ✅");
     } catch (error) {}
 
-    existingUser.userStep = "menu";
+    existingUser.currentStep.step = "menu";
     usersMap.set(telegramId, {
       user: existingUser,
       time: Date.now(),

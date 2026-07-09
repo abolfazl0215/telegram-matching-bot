@@ -1,6 +1,5 @@
 const { redisClient } = require("../config/redis");
 const blockedUsers = require("../utils/blockedUsers");
-const { checkUrl } = require("../utils/checkUrl");
 const { reply } = require("./reply");
 
 const replyWithPhoto = async (ctx, next, photos, caption) => {

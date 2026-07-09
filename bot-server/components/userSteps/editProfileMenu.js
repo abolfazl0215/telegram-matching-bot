@@ -2,12 +2,7 @@ const chunkArray = require("../../utils/chunkArray.js");
 const fs = require("fs");
 const { reply } = require("../../telegram_methods/reply.js");
 
-const { checkUrl } = require("../../utils/checkUrl.js");
-const {
-  SEARCH_KEYBOARD,
-  MENU_KEYBOARD,
-  MY_PROFILE_MENU_KEYBOARD,
-} = require("../../bot/constants.js");
+const constant = require("../../bot/constants.js");
 const {
   replyWithPhoto,
 } = require("../../telegram_methods/replyWithPhoto.js");
@@ -19,10 +14,6 @@ const DAY_MS = 86400000; // 24 ساعت
 const DAILY_PHOTO_CHANGE_LIMIT = 3;
 const FOR_YOU_LIST_MIN_LENGTH = 10;
 const FOR_YOU_LIST_TTL_MS = 600000; // 10 دقیقه
-
-const kbSearchMenu = SEARCH_KEYBOARD;
-const kbEditMenu = MY_PROFILE_MENU_KEYBOARD;
-const kbEditMenuWithExtra = MENU_KEYBOARD;
 
 const EDIT_MENU_TEXT = `1. ${"مشاهده پروفایل ها"} \n2. ${"ویرایش پروفایلم"} \n3. ${"تغییر عکس من"}`;
 
@@ -92,10 +83,10 @@ const editProfileMenu = async (
         forYouTime.get(telegramId) + FOR_YOU_LIST_TTL_MS > Date.now();
 
       if (cacheIsFresh) {
-        await safeReply("🔎", kbSearchMenu);
+        await safeReply("🔎", constant.SEARCH_KEYBOARD);
         await sendCurrentCandidateCard();
       } else {
-        await safeReply("🔎", kbSearchMenu);
+        await safeReply("🔎", constant.SEARCH_KEYBOARD);
 
         try {
           await sendCurrentCandidateCard();
@@ -113,6 +104,9 @@ const editProfileMenu = async (
 
     try {
       await reply(ctx, next, redisClient, "سن خود را انتخاب کنید", [
+        [{
+          text:"بازگشت"
+        }],
         ...chunkArray(ages, 4),
       ]);
     } catch (error) {
@@ -156,7 +150,7 @@ const editProfileMenu = async (
         next,
         redisClient,
         `⭕ در هر روز فقط ${DAILY_PHOTO_CHANGE_LIMIT} بار میتوانید تصویر پروفایل را تغییر دهید`,
-        kbEditMenu,
+        constant.MY_PROFILE_MENU_KEYBOARD,
       );
       return;
     }
@@ -191,7 +185,7 @@ const editProfileMenu = async (
       }
     }
   } else {
-    await safeReply(EDIT_MENU_TEXT, kbEditMenuWithExtra);
+    await safeReply(EDIT_MENU_TEXT, constant.MENU_KEYBOARD);
   }
 };
 

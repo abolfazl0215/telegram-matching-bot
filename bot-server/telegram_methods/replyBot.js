@@ -55,7 +55,7 @@ const replyBot = async (
       error?.response.error_code === 400
     ) {
       console.log(
-        `Invalid chat_id: ${telegramId}. Likely doesn't exist.`,
+        `Invalid chat_id: ${id}. Likely doesn't exist.`,
       );
       try {
         await redisClient.sadd("blocked_users", String(id));

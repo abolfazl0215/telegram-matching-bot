@@ -89,12 +89,20 @@ const createQueue = (name) => {
 
 const messageQueue = createQueue("messageQueue");
 const newLikeQueue = createQueue("newLikeQueue");
+// صف جدید: اعلام حذف یک لایک از سمت ربات به سرور پردازنده (وقتی کاربر با
+// 💚 یا ❌ روی یک لایک تصمیم می‌گیرد و آن از صف لایک‌های او حذف می‌شود).
+// همان الگوی newLikeQueue را دنبال می‌کند: هر دو سرور روی یک Redis مشترک
+// صف با همین نام می‌سازند؛ ربات .add می‌کند و پردازنده .process می‌کند.
+const removeFromNewLikesQueue = createQueue(
+  "removeFromNewLikesQueue",
+);
 
 const sendMessageToAllQueue = createQueue("sendMessageToAllQueue");
 const cleanupOldUsersQueue = createQueue("cleanupOldUsersQueue");
 const goToNotificationMenu = createQueue("goToNotificationMenu");
 
 const addToPoolQueue = createQueue("addToPoolQueue");
+const removeFromExploreQueue = createQueue("removeFromExploreQueue");
 
 const requestToFillForYouList = createQueue(
   "requestToFillForYouList",
@@ -105,11 +113,13 @@ module.exports = {
   redisClient,
   messageQueue,
   newLikeQueue,
+  removeFromNewLikesQueue,
   sendMessageToAllQueue,
   cleanupOldUsersQueue,
   goToNotificationMenu,
   addToPoolQueue,
   requestToFillForYouList,
   fillForYouList,
+  removeFromExploreQueue,
   logger,
 };

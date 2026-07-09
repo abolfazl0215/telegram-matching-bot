@@ -5,9 +5,7 @@ const usersMap = require("../utils/usersMap");
 const Pictures = require("../models/Pictures");
 const fs = require("fs");
 const { reply } = require("../telegram_methods/reply");
-const { checkUrl } = require("../utils/checkUrl");
 const { lastTimeAddProfileToList } = require("../app/state");
-const { addToPool } = require("../utils/addToPool");
 const {
   addToPoolQueue,
   requestToFillForYouList,
@@ -404,7 +402,7 @@ const changePhoto = async (
       await reply(ctx, next, redisClient, "⌛️");
       if (
         existingUser.profileImages.length &&
-        existingUser.profileImagesEdit > 0
+        existingUser.profileImagesEdit.length > 0
       ) {
         await Pictures.deleteMany({
           url: { $in: existingUser.profileImages },

@@ -5,14 +5,10 @@ const protobuf = require("protobufjs");
 const usersMap = require("../utils/usersMap");
 const Pictures = require("../models/Pictures");
 const { reply } = require("../telegram_methods/reply");
-const { checkUrl } = require("../utils/checkUrl");
-const { addToPool } = require("../utils/addToPool");
 const { lastTimeAddProfileToList } = require("../app/state");
 const { addToPoolQueue } = require("../config/redis");
-const {
-  SEARCH_KEYBOARD,
-  MY_PROFILE_MENU_KEYBOARD,
-} = require("../bot/constants");
+
+const constants = require("../bot/constants");
 const {
   getUserProfilePicture,
 } = require("../utils/getProfilePicture");
@@ -94,8 +90,7 @@ const KEYBOARDS = {
     process.env.PLATFORM == "bale"
       ? [[{ text: "بله" }, { text: "ویرایش پروفایلم" }]]
       : [[{ text: "ویرایش پروفایلم" }, { text: "بله" }]],
-  searchBar: SEARCH_KEYBOARD,
-  editProfileMenu: MY_PROFILE_MENU_KEYBOARD,
+  editProfileMenu: constants.MY_PROFILE_MENU_KEYBOARD,
 };
 
 const stateKeyboard = (chunkArray) => [
@@ -445,7 +440,7 @@ const registerInBot = async (
   if (step === "photo") {
     const text = ctx?.message?.text;
 
-    if (text === "مرحله قبلی") {
+    if (text === "مرحله قبلی" || text === "بازگشت") {
       await changeRegisterStepAndSaveChanges("bio");
       await replyOrFallback(
         "درباره خودت بیشتر بگو. دنبال چه کسی می‌گردی؟ می‌خوای چیکار کنی؟ من بهترین مچ‌ها رو پیدا می‌کنم برات\n\n⚪️🟢🟢🟢🟢🟢🟢🟢",
@@ -776,7 +771,7 @@ const registerInBot = async (
           next,
           redisClient,
           "در حال جستجوی افراد ...",
-          KEYBOARDS.searchBar,
+          constants.SEARCH_KEYBOARD,
         );
 
         const nextCandidate = forYouList.get(telegramId)?.[0];
@@ -810,7 +805,7 @@ const registerInBot = async (
         next,
         redisClient,
         `1. ${"مشاهده پروفایل ها"} \n2. ${"ویرایش پروفایلم"} \n3. ${"تغییر عکس من"}`,
-        KEYBOARDS.editProfileMenu,
+        constants.MY_PROFILE_MENU_KEYBOARD,
       );
     } else {
       await sendProfileCard(savedUser);

@@ -28,7 +28,6 @@ const NEW_USER_BOOST_THRESHOLD = 4;
 const RETURN_BOOST_DAYS = 7;
 const RETURN_BOOST_DURATION_HOURS = 24;
 
-
 function clamp01(x) {
   return Math.min(1, Math.max(0, x));
 }
@@ -146,8 +145,8 @@ function computeNewUserBoost(u) {
 }
 
 function computeReturnBoost(u) {
-  if (!u.lastActivity) return 0;
-  const hoursSinceLastSeen = (Date.now() - u.lastActivity) / 3600000;
+  if (!u.returnBoostAt) return 0;
+  const hoursSinceLastSeen = (Date.now() - u.returnBoostAt) / 3600000;
   const RETURN_BOOST_THRESHOLD_HOURS = RETURN_BOOST_DAYS * 24;
   if (hoursSinceLastSeen < RETURN_BOOST_THRESHOLD_HOURS) return 0;
   const decay =

@@ -8,12 +8,15 @@ const userSchema = new mongoose.Schema({
     unique: true,
     index: true,
   },
+
   fullName: { type: String },
   userName: { type: String },
   inviteCode: { type: String },
   inviteBy: { type: String },
 
   rememberingMessage: { type: Number, default: 0 },
+
+  returnBoostAt: { type: Number, default: 0 },
 
   age: { type: Number },
   gender: { type: String, enum: ["male", "female"] },
@@ -64,7 +67,6 @@ const userSchema = new mongoose.Schema({
   profileImages: [{ type: String }],
   profileImagesEdit: [{ type: String }],
 
-  // score: { type: Number, default: 0.5 },
   receivedLikes: [
     // maxLength = 100
     {
@@ -79,11 +81,16 @@ const userSchema = new mongoose.Schema({
   blockedByMe: [Number],
   blockedMe: [Number],
   reportedByMe: [Number],
-  matches: [Number],
+  matches: [
+    {
+      telegramId: Number,
+      at: Number,
+    },
+  ],
   likedAges: [Number],
 
   lastGetCandidatesAt: { type: Number, default: 1 },
-  getCandidatesCount: { type: Number, default: 0 }, 
+  getCandidatesCount: { type: Number, default: 0 },
 });
 
 const User = mongoose.model("User", userSchema);

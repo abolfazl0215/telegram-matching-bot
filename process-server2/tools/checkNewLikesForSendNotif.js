@@ -4,7 +4,6 @@ const User = require("../models/User");
 const { replyBot } = require("../telegram_methods/replyBot");
 const blockedUsers = require("../utils/blockedUsers");
 
-const NEW_LIKES_KEY = "newLikes";
 const NEW_LIKES_LOCK_KEY = "lock:newLikes:notif";
 const LOCK_TTL_SECONDS = 55 * 60; // کمتر از یک ساعت
 const CONCURRENCY = 10; // محافظه‌کارانه برای هزاران کاربر
@@ -134,7 +133,12 @@ async function processSingleUser(
           return console.log(
             "user is block (check new like for send notif)",
           );
-        await replyBot(telegramId__, redisClient, messageText, NOTIFICATION_MENU_KEYBOARD);
+        await replyBot(
+          telegramId__,
+          redisClient,
+          messageText,
+          NOTIFICATION_MENU_KEYBOARD,
+        );
 
         if (findUser) {
           findUser.currentStep.flow = "bot";
@@ -173,33 +177,30 @@ async function processSingleUser(
 
 const checkNewLikesForSendNotif = async (
   redisClient,
-  NewLikeProto,
-  loadNewLikeProto,
+  newLikesStore,
 ) => {
   console.log("start checkNewLikesForSendNotif ---------");
   let lockAcquired = false;
 
   try {
-    await loadNewLikeProto();
-
-    const getData = await redisClient.getBuffer(NEW_LIKES_KEY);
-    if (!Buffer.isBuffer(getData)) return;
-
-    let decodedMessage;
-    try {
-      decodedMessage = NewLikeProto.decode(getData);
-    } catch (decodeErr) {
-      console.log("Decode newLikes error:", decodeErr);
+    // قفل توزیع‌شده: اگر (مثلاً به‌خاطر کند بودن اجرای قبلی یا اجرای
+    // موازی چند instance) اجرای قبلی هنوز تمام نشده باشد، از این اجرا
+    // صرف‌نظر می‌کنیم. نکته: قبلاً این تابع تعریف می‌شد ولی هیچ‌جا صدا
+    // زده نمی‌شد، پس عملاً بی‌اثر بود؛ همین‌جا اصلاح شد.
+    lockAcquired = await acquireLock(redisClient);
+    if (!lockAcquired) {
+      console.log(
+        "checkNewLikesForSendNotif: قفل قبلاً گرفته شده، این اجرا رد شد.",
+      );
       return;
     }
 
-    console.log("step 3");
+    // به‌جای خواندن مستقل از Redis، از آرایه‌ی درون‌حافظه‌ای newLikesStore
+    // استفاده می‌کنیم که همیشه تازه‌ترین نسخه است (پردازنده تنها writer
+    // نهایی Redis است، اما بین دو flush دوره‌ای، حافظه از Redis جلوتر است).
+    const newLikes = newLikesStore.getArray();
 
-    const newLikes = Array.isArray(decodedMessage?.users)
-      ? decodedMessage.users
-      : [];
-
-    if (newLikes.length === 0) return;
+    if (!Array.isArray(newLikes) || newLikes.length === 0) return;
 
     const usersToRemoveSet = new Set();
 
@@ -210,24 +211,19 @@ const checkNewLikesForSendNotif = async (
         batch.map((user) => {
           const telegramId__ = getTelegramId(user);
           if (blockedUsers.has(String(telegramId__))) return;
-          processSingleUser(user, usersToRemoveSet, redisClient);
+          return processSingleUser(
+            user,
+            usersToRemoveSet,
+            redisClient,
+          );
         }),
       );
     }
 
-    // فقط اگر حذف قطعی داریم، Redis را آپدیت کن
+    // فقط اگر حذف قطعی داریم، newLikesStore را آپدیت کن (خودش دوره‌ای
+    // flush می‌کند، نیازی به نوشتن فوری در Redis نیست)
     if (usersToRemoveSet.size > 0) {
-      const updatedNewLikes = newLikes.filter((u) => {
-        const tid = Number(u?.telegramId);
-        return !usersToRemoveSet.has(tid);
-      });
-
-      const updatedMessage = NewLikeProto.create({
-        users: updatedNewLikes,
-      });
-
-      const buffer = NewLikeProto.encode(updatedMessage).finish();
-      await redisClient.set(NEW_LIKES_KEY, buffer);
+      newLikesStore.removeUsers(usersToRemoveSet);
 
       console.log(
         `Removed ${usersToRemoveSet.size} users from newLikes list:`,

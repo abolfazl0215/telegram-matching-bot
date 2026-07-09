@@ -5,7 +5,6 @@ const {
   redisClient,
 } = require("../config/redis");
 const User = require("../models/User");
-const { computeScore } = require("../utils/computeScore");
 const protobuff = require("./protobuf");
 const state = require("./state");
 const lastViewed = state.lastViewed;

@@ -7,19 +7,22 @@ const {
   redisClient,
   cleanupOldUsersQueue,
   newLikeQueue,
+  removeFromNewLikesQueue,
   addToPoolQueue,
   requestToFillForYouList,
   fillForYouList,
   logger,
+  removeFromExploreQueue,
 } = require("./config/redis");
-const { fillPool } = require("./utils/fillPool");
-const { updatePoolInRedis } = require("./utils/updatePoolInRedis");
 const protobuf = require("./app/protobuf");
+const newLikesMap = require("./utils/newLikesMap");
 const { registerInBot } = require("./components/registerInBot.js");
 const editProfileMenu = require("./components/userSteps/editProfileMenu.js");
 
 // config dotenv
 require("dotenv").config();
+const pendingRefills = new Map();
+const PENDING_TTL = 20000;
 
 const bot = require("./bot");
 const state = require("./app/state");
@@ -31,7 +34,6 @@ const {
 } = require("./app/session");
 const { registerLocalQueueWorkers } = require("./app/queueWorkers");
 const bodyParser = require("body-parser");
-const { encrypt } = require("./utils/encrypt");
 const { reply } = require("./telegram_methods/reply");
 const chunkArray = require("./utils/chunkArray");
 const {
@@ -39,18 +41,13 @@ const {
 } = require("./utils/generateInviteCode.js");
 const { changePhoto } = require("./components/changePhoto.js");
 const { registerPaymentHandlers } = require("./bot/payments.js");
-const { removeFromExplore } = require("./utils/removeFromExplore.js");
 
 const { replyBot } = require("./telegram_methods/replyBot.js");
 const { AGES, BOT_INVITE_BASE } = require("./app/config.js");
 const { registerReportHandlers } = require("./bot/reports.js");
 const editProfileInBot = require("./components/editProfileInBot.js");
-const {
-  SEARCH_KEYBOARD,
-  MENU_KEYBOARD,
-  NOTIFICATION_MENU_KEYBOARD,
-  MY_PROFILE_MENU_KEYBOARD,
-} = require("./bot/constants.js");
+const constants = require("./bot/constants.js");
+
 const {
   replyWithPhoto,
 } = require("./telegram_methods/replyWithPhoto.js");
@@ -100,20 +97,12 @@ const ages = AGES;
 const generateInviteLink = (telegramId) =>
   `${BOT_INVITE_BASE}${generateInviteCode(telegramId)}`;
 
-let usersArrayFromRedis = [];
-
-const fillUsersArrayFromRedis = async () => {
-  const getData = await redisClient.getBuffer(`newLikes`);
-  if (Buffer.isBuffer(getData)) {
-    await protobuf.loadNewLikeProto();
-    const decodedMessage = protobuf.NewLikeProto.decode(getData);
-    usersArrayFromRedis = decodedMessage.users || [];
-  }
-};
-
-setInterval(async () => {
-  await fillUsersArrayFromRedis();
-}, 60000);
+// از این پس newLikesMap (utils/newLikesMap.js) جایگزین آرایه‌ی قدیمی
+// newLikesArrayFromRedis شده است. این Map فقط یک‌بار، پیش از bot.launch
+// (پایین‌تر در startServer) از روی Redis پر می‌شود. دیگر هیچ pull دوره‌ای
+// از Redis نداریم چون سرور ربات دیگر مستقیماً در کلید "newLikes" نمی‌نویسد؛
+// هر تغییری (اضافه/حذف) هم روی همین Map محلی اعمال می‌شود و هم با یک job
+// به سرور پردازنده (که تنها writer نهایی Redis است) اعلام می‌شود.
 
 fillForYouList.process(2, async (job) => {
   const { telegramId, candidates } = job.data;
@@ -122,6 +111,8 @@ fillForYouList.process(2, async (job) => {
     forYouTime.set(+telegramId, Date.now());
   } catch (error) {
     console.error("Error processing add to pool :", error);
+  } finally {
+    pendingRefills.delete(+telegramId);
   }
 });
 
@@ -171,57 +162,6 @@ const processStatement = async (ctx, next) => {
 
   console.log("is bale :", process.env.PLATFORM == "bale");
 
-  // set userName for telegram
-  // if (process.env.PLATFORM == "telegram") {
-  //   if (!userName) {
-  //     await reply(
-  //       ctx,
-  //       next,
-  //       redisClient,
-  //       "تلگرام شما باید یک نام کاربری (آیدی) داشته باشد \n\n- لطفا ابتدا یک نام کاربری انتخاب کنید",
-  //       [],
-  //       [
-  //         [
-  //           {
-  //             text: "انجام دادم ✅",
-  //             callback_data: "set_telegram_username",
-  //           },
-  //         ],
-  //       ],
-  //     );
-  //   } else {
-  //     const data_ = {
-  //       telegramId: String(telegramId),
-  //       userName: userName,
-  //     };
-
-  //     const encryptedData = encrypt(data_);
-
-  //     await reply(
-  //       ctx,
-  //       next,
-  //       redisClient,
-  //       "از طریق دکمه زیر وارد برنامه شوید 👇🏻",
-  //       [],
-  //       [
-  //         [
-  //           {
-  //             text: "ورود به برنامه 😎 (با اینترنت بین الملل)",
-  //             url: `https://redirect-to-app-delta.vercel.app/open?data=${encryptedData}`,
-  //           },
-  //         ],
-  //         [
-  //           {
-  //             text: "ورود به برنامه 😎 (با اینترنت داخلی)",
-  //             url: `https://pounes.ir/open?data=${encryptedData}`,
-  //           },
-  //         ],
-  //       ],
-  //     );
-  //   }
-  //   return;
-  // }
-
   // send Message after success payment <<<<<<<<<<
   if (ctx.message.successful_payment) {
     try {
@@ -258,11 +198,13 @@ const processStatement = async (ctx, next) => {
             next,
             redisClient,
             `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-            MENU_KEYBOARD,
+            constants.MENU_KEYBOARD,
           );
         } catch (error) {
           console.log(error);
         }
+        lastTimeAddProfileToList.set(telegramId, Date.now());
+        addToPoolQueue.add({ user: existingUser });
       }, 200);
     } catch (error) {
       console.log(error);
@@ -307,6 +249,7 @@ const processStatement = async (ctx, next) => {
   if (usersMap.get(telegramId)) {
     existingUser = usersMap.get(telegramId).user;
     usersMap.get(telegramId).time = getNowTime();
+    console.log(existingUser.currentStep);
   } else {
     try {
       existingUser = await User.findOne({
@@ -343,11 +286,11 @@ const processStatement = async (ctx, next) => {
       { userName: userName || "" },
       { returnDocument: "after" },
     );
+    existingUser.userName = userName || "";
     usersMap.set(telegramId, {
-      user: updatedUser,
+      user: existingUser,
       time: getNowTime(),
     });
-    existingUser = updatedUser;
   }
   // if user changed userName update it in database >>>>>>>>>>>
 
@@ -355,6 +298,17 @@ const processStatement = async (ctx, next) => {
   if (existingUser?.fullName) {
     const lastTime = lastTimeAddProfileToList.get(telegramId) ?? 0;
     if (lastTime + 500000 < Date.now()) {
+      const days7 = 7 * 24 * 60 * 60 * 1000;
+      if (existingUser.lastActivity + days7 < Date.now()) {
+        existingUser.returnBoostAt = existingUser.lastActivity;
+      }
+
+      existingUser.lastActivity = Date.now();
+      usersMap.set(telegramId, {
+        time: Date.now(),
+        user: existingUser,
+      });
+
       lastTimeAddProfileToList.set(telegramId, Date.now());
       addToPoolQueue.add({ user: existingUser });
     }
@@ -363,13 +317,23 @@ const processStatement = async (ctx, next) => {
 
   // Check if forYou list needs to be refilled and refill if necessary and add to suggestQueue <<<
   if (existingUser) {
-    // forYou list = suggestions users to show to user
     const currentList = forYouList.get(telegramId);
-    const needsRefill =
+    const lastFetchTime = forYouTime.get(telegramId) ?? 0;
+
+    const isEmptyOrLow =
       !currentList ||
       !Array.isArray(currentList) ||
       currentList.length <= 3;
-    if (needsRefill && existingUser?.fullName) {
+    const isStale = Date.now() - lastFetchTime >= 6 * 60 * 60 * 1000; // 6 hours in milliseconds
+
+    const needsRefill = isEmptyOrLow || isStale;
+
+    const lastRequestAt = pendingRefills.get(telegramId);
+    const alreadyPending =
+      lastRequestAt && Date.now() - lastRequestAt < PENDING_TTL;
+
+    if (needsRefill && existingUser?.fullName && !alreadyPending) {
+      pendingRefills.set(telegramId, Date.now());
       requestToFillForYouList.add({ user: existingUser });
     }
   }
@@ -687,7 +651,6 @@ const processStatement = async (ctx, next) => {
         }
         // check if user has a userName ___________________ >>>
 
-
         if (ctx?.message?.text === "☰") {
           try {
             existingUser.currentStep.step = "menu";
@@ -703,7 +666,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              MENU_KEYBOARD,
+              constants.MENU_KEYBOARD,
             );
           } catch (error) {
             console.log(error);
@@ -755,11 +718,21 @@ const processStatement = async (ctx, next) => {
           // ** for candidate _________________________________________
           // -- add to received likes
 
-          newLikeQueue.add({
-            // telegramId: 2047192929,
-            telegramId: +forYouList.get(telegramId)[0]?.telegramId,
-            liker: existingUser,
-          });
+          {
+            const likeTargetId =
+              +forYouList.get(telegramId)[0]?.telegramId;
+
+            // آپدیت optimistic و بلافاصله‌ی Map محلی (برای نمایش سریع‌تر
+            // به گیرنده‌ی لایک، بدون نیاز به رفت‌وبرگشت از پردازنده)
+            newLikesMap.addLike(likeTargetId, existingUser);
+
+            // اعلام این لایک به سرور پردازنده تا در آرایه‌ی خودش و در
+            // نهایت روی Redis هم اعمال شود (پردازنده تنها writer نهایی است)
+            newLikeQueue.add({
+              telegramId: likeTargetId,
+              liker: existingUser,
+            });
+          }
 
           if (!existingUser.forTutorial.firstLike) {
             try {
@@ -958,7 +931,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               "🧐👇🏽",
-              SEARCH_KEYBOARD,
+              constants.SEARCH_KEYBOARD,
             );
           } catch (error) {
             console.log(error);
@@ -1009,7 +982,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               "🔎",
-              SEARCH_KEYBOARD,
+              constants.SEARCH_KEYBOARD,
             );
           } catch (_) {}
 
@@ -1072,11 +1045,23 @@ const processStatement = async (ctx, next) => {
 
             //  add to liked by me _____________________________ >>>>>
             // newLike for notification
-            newLikeQueue.add({
-              telegramId: +forYouList.get(telegramId)[0]?.telegramId,
-              liker: existingUser,
-              message: ctx?.message?.text,
-            });
+            {
+              const likeTargetId =
+                +forYouList.get(telegramId)[0]?.telegramId;
+              const likeMessage = ctx?.message?.text;
+
+              newLikesMap.addLike(
+                likeTargetId,
+                existingUser,
+                likeMessage,
+              );
+
+              newLikeQueue.add({
+                telegramId: likeTargetId,
+                liker: existingUser,
+                message: likeMessage,
+              });
+            }
           } else {
             reply(
               ctx,
@@ -1109,7 +1094,7 @@ const processStatement = async (ctx, next) => {
             next,
             redisClient,
             "لایک شما به همراه پیام ارسال شد ✅",
-            SEARCH_KEYBOARD,
+            constants.SEARCH_KEYBOARD,
           );
 
           existingUser.currentStep.step = "search";
@@ -1188,7 +1173,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               "🔎",
-              SEARCH_KEYBOARD,
+              constants.SEARCH_KEYBOARD,
             );
 
             const {
@@ -1247,7 +1232,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"} \n2. ${"ویرایش پروفایلم"} \n3. ${"تغییر عکس من"}`,
-              MY_PROFILE_MENU_KEYBOARD,
+              constants.MY_PROFILE_MENU_KEYBOARD,
             );
           } catch (error) {
             console.log({ error });
@@ -1314,7 +1299,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              MENU_KEYBOARD,
+              constants.MENU_KEYBOARD,
             );
           } catch (error) {
             console.log({ error });
@@ -1333,7 +1318,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              MENU_KEYBOARD,
+              constants.MENU_KEYBOARD,
             );
           } catch (error) {
             console.log(error);
@@ -1371,7 +1356,7 @@ const processStatement = async (ctx, next) => {
                 next,
                 redisClient,
                 `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                MENU_KEYBOARD,
+                constants.MENU_KEYBOARD,
               );
             } catch (error) {
               console.log(error);
@@ -1394,19 +1379,24 @@ const processStatement = async (ctx, next) => {
 
             if (sleppStatus) {
               try {
-                await removeFromExplore(existingUser);
+                removeFromExploreQueue.add({ user: existingUser });
               } catch (_) {}
             }
 
             // await ctx.reply("✅");
-            await reply(ctx, next, redisClient, "✅");
+            await reply(
+              ctx,
+              next,
+              redisClient,
+              `حالت خواب ${existingUser.sleep ? "فعال" : "غیرفعال"} شد ✅`,
+            );
 
             await reply(
               ctx,
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              MENU_KEYBOARD,
+              constants.MENU_KEYBOARD,
             );
           } catch (error) {
             console.log({ error });
@@ -1593,7 +1583,7 @@ const processStatement = async (ctx, next) => {
                 next,
                 redisClient,
                 `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                MENU_KEYBOARD,
+                constants.MENU_KEYBOARD,
               );
             } catch (error) {
               console.log(error);
@@ -1660,7 +1650,7 @@ const processStatement = async (ctx, next) => {
                 next,
                 redisClient,
                 `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                MENU_KEYBOARD,
+                constants.MENU_KEYBOARD,
               );
             } catch (error) {
               console.log(error);
@@ -1680,7 +1670,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              MENU_KEYBOARD,
+              constants.MENU_KEYBOARD,
             );
           } catch (error) {
             console.log(error);
@@ -1697,7 +1687,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-              MENU_KEYBOARD,
+              constants.MENU_KEYBOARD,
             );
           } catch (error) {
             console.log(error);
@@ -1716,7 +1706,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `${"افرادی شما را لایک کردند. یه نگاهی بنداز "}\n\n1. ${"نمایش"}\n2. ${"حالت خواب"}`,
-              NOTIFICATION_MENU_KEYBOARD,
+              constants.NOTIFICATION_MENU_KEYBOARD,
             );
           } catch (error) {
             console.log({ error });
@@ -1736,7 +1726,7 @@ const processStatement = async (ctx, next) => {
 
             if (sleppStatus) {
               try {
-                await removeFromExplore(existingUser);
+                removeFromExploreQueue.add({ user: existingUser });
               } catch (_) {}
             }
             await reply(
@@ -1750,7 +1740,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `${"افرادی شما را لایک کردند. یه نگاهی بنداز "}\n\n1. ${"نمایش"}\n2. ${"حالت خواب"}`,
-              NOTIFICATION_MENU_KEYBOARD,
+              constants.NOTIFICATION_MENU_KEYBOARD,
             );
           } catch (error) {
             console.log({ error });
@@ -1786,29 +1776,24 @@ const processStatement = async (ctx, next) => {
               user: existingUser,
             });
 
-            await reply(
-              ctx,
-              next,
-              redisClient,
-              "افراد زیر شما را لایک کرده اند 🥰👇🏽\n\nهر کدام را لایک کنید به او متصل میشوید و میتوانید با او چت کنید 🗨️ \n\nدر حال جستجوی لایک ها ...",
-              [[{ text: "❌" }, { text: "💚" }]],
-            );
-
-            const getData = await redisClient.getBuffer(`newLikes`);
-
-            if (
-              usersArrayFromRedis &&
-              Array.isArray(usersArrayFromRedis) &&
-              usersArrayFromRedis.length > 0
-            ) {
-              const userFromRedis = usersArrayFromRedis.find(
-                (user) => +user.telegramId === +telegramId,
-              );
+            {
+              const userFromRedis = newLikesMap.getEntry(telegramId);
               if (
                 userFromRedis &&
                 Array.isArray(userFromRedis.likers) &&
                 userFromRedis.likers.length > 0
               ) {
+                await reply(
+                  ctx,
+                  next,
+                  redisClient,
+                  "افراد زیر شما را لایک کرده اند 🥰👇🏽\n\nهر کدام را لایک کنید به او متصل میشوید و میتوانید با او چت کنید 🗨️ \n\nدر حال جستجوی لایک ها ...",
+                  [
+                    [{ text: "❌" }, { text: "💚" }],
+                    [{ text: "رد کردن همه" }],
+                  ],
+                );
+
                 const photos = userFromRedis.likers[0].profileImages;
                 const fullName = userFromRedis.likers[0].fullName;
                 const age = userFromRedis.likers[0].age;
@@ -1826,31 +1811,31 @@ const processStatement = async (ctx, next) => {
                     bio ? "\n" + bio : ""
                   } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
                 );
-              }
-            } else {
-              try {
-                await reply(
-                  ctx,
-                  next,
-                  redisClient,
-                  "شما لایکی ندارید",
-                );
-                existingUser.currentStep.step = "menu";
+              } else {
+                try {
+                  existingUser.currentStep.step = "menu";
 
-                usersMap.set(telegramId, {
-                  time: Date.now(),
-                  user: existingUser,
-                });
+                  usersMap.set(telegramId, {
+                    time: Date.now(),
+                    user: existingUser,
+                  });
+                  await reply(
+                    ctx,
+                    next,
+                    redisClient,
+                    "شما لایکی ندارید",
+                  );
 
-                await reply(
-                  ctx,
-                  next,
-                  redisClient,
-                  `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                  MENU_KEYBOARD,
-                );
-              } catch (error) {
-                console.log(error);
+                  await reply(
+                    ctx,
+                    next,
+                    redisClient,
+                    `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
+                    constants.MENU_KEYBOARD,
+                  );
+                } catch (error) {
+                  console.log(error);
+                }
               }
             }
           } catch (error) {
@@ -1889,7 +1874,7 @@ const processStatement = async (ctx, next) => {
               next,
               redisClient,
               `${"افرادی شما را لایک کردند. یه نگاهی بنداز "}\n\n1. ${"نمایش"}\n2. ${"حالت خواب"}`,
-              NOTIFICATION_MENU_KEYBOARD,
+              constants.NOTIFICATION_MENU_KEYBOARD,
             );
           } catch (error) {
             console.log(error);
@@ -1960,280 +1945,302 @@ const processStatement = async (ctx, next) => {
             if (!existingUser.matches) existingUser.matches = [];
             // const getData = await redisClient.getBuffer(`newLikes`);
 
-            if (
-              Array.isArray(usersArrayFromRedis) &&
-              usersArrayFromRedis.length > 0
-            ) {
-              // await protobuf.loadNewLikeProto();
-              // const decodedMessage =
-              //   protobuf.NewLikeProto.decode(getData);
-              // let usersArrayFromRedis = decodedMessage.users || [];
-              const userFromRedis = usersArrayFromRedis.find(
-                (user) => +user.telegramId === +telegramId,
-              );
+            {
+              const userFromRedis = newLikesMap.getEntry(telegramId);
 
-              if (
-                userFromRedis &&
-                Array.isArray(userFromRedis.likers) &&
-                userFromRedis.likers.length > 0
-              ) {
-                const liker = userFromRedis.likers[0];
-                const fcmToken = liker?.fcmToken;
-                const likerTelegramId = liker.telegramId;
-                const photos =
-                  userFromRedis.likers[0]?.profileImages || [];
-                const fullName =
-                  userFromRedis.likers[0]?.fullName || "";
-                const likerUserName =
-                  userFromRedis.likers[0]?.userName || "";
-                const age = userFromRedis.likers[0]?.age || "";
-                const gender = userFromRedis.likers[0]?.gender || "";
-                const state = userFromRedis.likers[0]?.state || "";
-                const bio = userFromRedis.likers[0]?.bio || "";
-                const textMessage = userFromRedis.likers[0]?.message;
+              if (userFromRedis) {
+                if (
+                  userFromRedis &&
+                  Array.isArray(userFromRedis.likers) &&
+                  userFromRedis.likers.length > 0
+                ) {
+                  const liker = userFromRedis.likers[0];
+                  const fcmToken = liker?.fcmToken;
+                  const likerTelegramId = liker.telegramId;
+                  const photos =
+                    userFromRedis.likers[0]?.profileImages || [];
+                  const fullName =
+                    userFromRedis.likers[0]?.fullName || "";
+                  const likerUserName =
+                    userFromRedis.likers[0]?.userName || "";
+                  const age = userFromRedis.likers[0]?.age || "";
+                  const gender =
+                    userFromRedis.likers[0]?.gender || "";
+                  const state = userFromRedis.likers[0]?.state || "";
+                  const bio = userFromRedis.likers[0]?.bio || "";
+                  const textMessage =
+                    userFromRedis.likers[0]?.message;
 
-                // send notification
-                // if (fcmToken) {
-                //   try {
-                //     await sendNotification({
-                //       token: fcmToken,
-                //       title: `شما و ${existingUser?.fullName || ""} باهم مَچ شدید`,
-                //       body: "اکنون میتوانید با هم چت کنید",
-                //       data: {},
-                //     });
-                //   } catch (error) {
-                //     console.log({ error });
-                //   }
-                // }
+                  // send notification
+                  // if (fcmToken) {
+                  //   try {
+                  //     await sendNotification({
+                  //       token: fcmToken,
+                  //       title: `شما و ${existingUser?.fullName || ""} باهم مَچ شدید`,
+                  //       body: "اکنون میتوانید با هم چت کنید",
+                  //       data: {},
+                  //     });
+                  //   } catch (error) {
+                  //     console.log({ error });
+                  //   }
+                  // }
 
-                // send match message for me _______________ <<<
-                try {
-                  if (!existingUser.matches)
-                    existingUser.matches = [];
-                  if (
-                    (existingUser?.subscriptionExpireTime &&
-                      existingUser.subscriptionExpireTime >
-                        Date.now()) ||
-                    existingUser.gender == "female" ||
-                    existingUser.matches.length <= 2
-                  ) {
-                    await reply(
-                      ctx,
-                      next,
-                      redisClient,
-                      ` ${"شما و"} ${fullName} ${"با همدیگر مطابقت داده شده‌اید!"} 🎉\n\n${"از طریق دکمه زیر می‌توانید با هم چت کنید:"} \n\n آیدی کاربر : @${likerUserName}\n\n/user_${generateInviteCode(likerTelegramId)}`,
-                      [],
-                      [
+                  // send match message for me _______________ <<<
+                  try {
+                    if (!existingUser.matches)
+                      existingUser.matches = [];
+                    if (
+                      (existingUser?.subscriptionExpireTime &&
+                        existingUser.subscriptionExpireTime >
+                          Date.now()) ||
+                      existingUser.gender == "female" ||
+                      existingUser.matches.length <= 2
+                    ) {
+                      await reply(
+                        ctx,
+                        next,
+                        redisClient,
+                        ` ${"شما و"} ${fullName} ${"با همدیگر مطابقت داده شده‌اید!"} 🎉\n\n${"از طریق دکمه زیر می‌توانید با هم چت کنید:"} \n\n آیدی کاربر : @${likerUserName}\n\n/user_${generateInviteCode(likerTelegramId)}`,
+                        [],
                         [
-                          {
-                            text: "شروع چت 💬",
-                            url: `https://ble.ir/${likerUserName}?text=${"سلام"} ${fullName} ${"من از پونس هستم"}`,
-                          },
+                          [
+                            {
+                              text: "شروع چت 💬",
+                              url: `https://ble.ir/${likerUserName}?text=${"سلام"} ${fullName} ${"من از پونس هستم"}`,
+                            },
+                          ],
                         ],
-                      ],
-                    );
-                  } else {
-                    await reply(
-                      ctx,
-                      next,
-                      redisClient,
-                      ` ${"شما و"} ${fullName} ${"با همدیگر مطابقت داده شده‌اید!"} 🎉\n\n${"از طریق دکمه زیر می‌توانید با هم چت کنید:"} \n\n آیدی کاربر : ********\n\n/user_${generateInviteCode(likerTelegramId)} \n\n⭕برای دریافت پیوی (صفحه چت خصوصی) کاربر باید اشتراک 💎پرو داشته باشد`,
-                      [],
-                      [
+                      );
+                    } else {
+                      await reply(
+                        ctx,
+                        next,
+                        redisClient,
+                        ` ${"شما و"} ${fullName} ${"با همدیگر مطابقت داده شده‌اید!"} 🎉\n\n${"از طریق دکمه زیر می‌توانید با هم چت کنید:"} \n\n آیدی کاربر : ********\n\n/user_${generateInviteCode(likerTelegramId)} \n\n⭕برای دریافت پیوی (صفحه چت خصوصی) کاربر باید اشتراک 💎پرو داشته باشد`,
+                        [],
                         [
-                          {
-                            text: "خرید اشتراک 💎پرو",
-                            callback_data: "buy_like",
-                          },
+                          [
+                            {
+                              text: "خرید اشتراک 💎پرو",
+                              callback_data: "buy_like",
+                            },
+                          ],
                         ],
-                      ],
-                    );
-                  }
-                } catch (error) {
-                  console.log(error);
-                } finally {
-                  usersMap.set(telegramId, {
-                    time: Date.now(),
-                    user: existingUser,
-                  });
-                }
-                // send match message for me _______________ >>>
-
-                // send match message for contact _______________ <<<
-                try {
-                  let getLiker;
-                  if (usersMap.get(+likerTelegramId)) {
-                    getLiker = usersMap.get(+likerTelegramId).user;
-                  } else {
-                    getLiker = await User.findOne({
-                      telegramId: +likerTelegramId,
+                      );
+                    }
+                  } catch (error) {
+                    console.log(error);
+                  } finally {
+                    usersMap.set(telegramId, {
+                      time: Date.now(),
+                      user: existingUser,
                     });
                   }
-                  if (!getLiker.matches) getLiker.matches = [];
-                  if (
-                    (getLiker?.subscriptionExpireTime &&
-                      getLiker.subscriptionExpireTime > Date.now()) ||
-                    getLiker.gender == "female" ||
-                    getLiker.matches.length <= 2
-                  ) {
-                    console.log({ getLiker });
-                    await replyBot(
-                      +likerTelegramId,
-                      redisClient,
-                      ` ${"شما و"} ${existingUser?.fullName} ${"با همدیگر مطابقت داده شده‌اید!"} 🎉\n\n${"از طریق دکمه زیر می‌توانید با هم چت کنید:"} \n\n آیدی کاربر : @${userName}\n\n /user_${generateInviteCode(telegramId)}`,
-                      [],
-                      [
+                  // send match message for me _______________ >>>
+
+                  // send match message for contact _______________ <<<
+                  try {
+                    let getLiker;
+                    if (usersMap.get(+likerTelegramId)) {
+                      getLiker = usersMap.get(+likerTelegramId).user;
+                    } else {
+                      getLiker = await User.findOne({
+                        telegramId: +likerTelegramId,
+                      });
+                    }
+                    if (!getLiker.matches) getLiker.matches = [];
+                    if (
+                      (getLiker?.subscriptionExpireTime &&
+                        getLiker.subscriptionExpireTime >
+                          Date.now()) ||
+                      getLiker.gender == "female" ||
+                      getLiker.matches.length <= 2
+                    ) {
+                      console.log({ getLiker });
+                      await replyBot(
+                        +likerTelegramId,
+                        redisClient,
+                        ` ${"شما و"} ${existingUser?.fullName} ${"با همدیگر مطابقت داده شده‌اید!"} 🎉\n\n${"از طریق دکمه زیر می‌توانید با هم چت کنید:"} \n\n آیدی کاربر : @${userName}\n\n /user_${generateInviteCode(telegramId)}`,
+                        [],
                         [
-                          {
-                            text: "شروع چت 💬",
-                            url: `https://ble.ir/${userName}?text=${"سلام"} ${existingUser?.fullName} ${"من از پونس هستم"}`,
-                          },
+                          [
+                            {
+                              text: "شروع چت 💬",
+                              url: `https://ble.ir/${userName}?text=${"سلام"} ${existingUser?.fullName} ${"من از پونس هستم"}`,
+                            },
+                          ],
                         ],
-                      ],
-                    );
-                  } else {
-                    await replyBot(
-                      likerTelegramId,
-                      redisClient,
-                      ` ${"شما و"} ${existingUser?.fullName} ${"با همدیگر مطابقت داده شده‌اید!"} 🎉\n\n${"از طریق دکمه زیر می‌توانید با هم چت کنید:"} \n\n آیدی کاربر :************\n\n /user_${generateInviteCode(telegramId)} \n\n⭕برای دریافت پیوی (صفحه چت خصوصی) کاربر باید اشتراک 💎پرو داشته باشد`,
-                      [],
-                      [
+                      );
+                    } else {
+                      await replyBot(
+                        likerTelegramId,
+                        redisClient,
+                        ` ${"شما و"} ${existingUser?.fullName} ${"با همدیگر مطابقت داده شده‌اید!"} 🎉\n\n${"از طریق دکمه زیر می‌توانید با هم چت کنید:"} \n\n آیدی کاربر :************\n\n /user_${generateInviteCode(telegramId)} \n\n⭕برای دریافت پیوی (صفحه چت خصوصی) کاربر باید اشتراک 💎پرو داشته باشد`,
+                        [],
                         [
-                          {
-                            text: "خرید اشتراک 💎پرو",
-                            callback_data: "buy_like",
-                          },
+                          [
+                            {
+                              text: "خرید اشتراک 💎پرو",
+                              callback_data: "buy_like",
+                            },
+                          ],
                         ],
-                      ],
-                    );
+                      );
+                    }
+                  } catch (error) {
+                    console.log(error);
                   }
-                } catch (error) {
-                  console.log(error);
-                }
-                // send match message for contact _______________ >>>
+                  // send match message for contact _______________ >>>
 
-                // save in matches in db for me ___________________ <<<
-                try {
-                  // پیدا کردن ایندکس کاربر موجود با telegramId
-                  const existingMatchIndex =
-                    existingUser.matches.findIndex(
-                      (match) => +match === +likerTelegramId,
-                    );
-
-                  if (existingMatchIndex !== -1) {
-                    // اگر وجود داشت، به ایندکس 0 منتقل شود
-                    const existingMatch = existingUser.matches.splice(
-                      existingMatchIndex,
-                      1,
-                    )[0];
-                    existingUser.matches.unshift(+existingMatch);
-                  } else {
-                    // اگر وجود نداشت، اضافه شود
-                    existingUser.matches.unshift(+likerTelegramId);
-                  }
-                } catch (error) {
-                  console.log(error);
-                }
-                // save in matches in db for me ___________________ >>>
-
-                // save in matches in db for contact ___________________ <<<
-                try {
-                  let findContact;
-
-                  if (usersMap.get(+likerTelegramId)) {
-                    findContact = usersMap.get(+likerTelegramId).user;
-                    usersMap.get(+likerTelegramId).time =
-                      getNowTime();
-                  } else {
-                    findContact = await User.findOne({
-                      telegramId: +likerTelegramId,
-                    });
-                  }
-
-                  if (findContact) {
-                    if (!Array.isArray(findContact?.matches))
-                      findContact.matches = [];
+                  // save in matches in db for me ___________________ <<<
+                  try {
                     // پیدا کردن ایندکس کاربر موجود با telegramId
                     const existingMatchIndex =
-                      findContact.matches.findIndex(
-                        (match) => +match === +telegramId,
+                      existingUser.matches.findIndex(
+                        (match) =>
+                          +match.telegramId === +likerTelegramId,
                       );
 
                     if (existingMatchIndex !== -1) {
                       // اگر وجود داشت، به ایندکس 0 منتقل شود
                       const existingMatch =
-                        findContact.matches.splice(
+                        existingUser.matches.splice(
                           existingMatchIndex,
                           1,
                         )[0];
-                      findContact.matches.unshift(+existingMatch);
+                      existingUser.matches.unshift(+existingMatch);
                     } else {
                       // اگر وجود نداشت، اضافه شود
-                      findContact.matches.unshift(+telegramId);
+                      existingUser.matches.unshift({
+                        telegramId: +likerTelegramId,
+                        at: Date.now(),
+                      });
                     }
+                  } catch (error) {
+                    console.log(error);
+                  }
+                  // save in matches in db for me ___________________ >>>
+
+                  // save in matches in db for contact ___________________ <<<
+                  try {
+                    let findContact;
 
                     if (usersMap.get(+likerTelegramId)) {
-                      usersMap.set(+likerTelegramId, {
-                        user: findContact,
-                      });
+                      findContact =
+                        usersMap.get(+likerTelegramId).user;
+                      usersMap.get(+likerTelegramId).time =
+                        getNowTime();
                     } else {
-                      await findContact.save({
-                        optimisticConcurrency: false,
+                      findContact = await User.findOne({
+                        telegramId: +likerTelegramId,
                       });
                     }
-                  }
-                } catch (error) {
-                  console.log(error);
-                }
-                // save in matches in db for contact ___________________ >>>
 
-                // delete from list ----------------------------------
-                const list = userFromRedis.likers;
-                if (Array.isArray(list)) {
-                  list.shift(); // فقط آیتم اول حذف می‌شود
-                  // forYouList.set(telegramId, list); // دوباره در map قرار می‌دهیم (اختیاری)
+                    if (findContact) {
+                      if (!Array.isArray(findContact?.matches))
+                        findContact.matches = [];
+                      // پیدا کردن ایندکس کاربر موجود با telegramId
+                      const existingMatchIndex =
+                        findContact.matches.findIndex(
+                          (match) =>
+                            +match.telegramId === +telegramId,
+                        );
 
-                  const updatedUsersArray = usersArrayFromRedis.map(
-                    (user) => {
-                      if (+user.telegramId === +telegramId) {
-                        return {
-                          ...user,
-                          likers: list,
-                          time: Date.now(),
-                        };
+                      if (existingMatchIndex !== -1) {
+                        // اگر وجود داشت، به ایندکس 0 منتقل شود
+                        const existingMatch =
+                          findContact.matches.splice(
+                            existingMatchIndex,
+                            1,
+                          )[0];
+                        findContact.matches.unshift(+existingMatch);
+                      } else {
+                        // اگر وجود نداشت، اضافه شود
+                        findContact.matches.unshift({
+                          telegramId: +telegramId,
+                          at: Date.now(),
+                        });
                       }
-                      return user;
-                    },
-                  );
 
-                  const message_ = protobuf.NewLikeProto.create({
-                    users: updatedUsersArray,
+                      if (usersMap.get(+likerTelegramId)) {
+                        usersMap.set(+likerTelegramId, {
+                          user: findContact,
+                        });
+                      } else {
+                        await findContact.save({
+                          optimisticConcurrency: false,
+                        });
+                      }
+                    }
+                  } catch (error) {
+                    console.log(error);
+                  }
+                  // save in matches in db for contact ___________________ >>>
+
+                  // delete from list ----------------------------------
+                  // به‌جای بازنویسی کل آرایه و نوشتن مستقیم در Redis، فقط
+                  // نفر اول را از Map محلی حذف می‌کنیم (برای پاسخ سریع به
+                  // کاربر) و حذف را با یک job به سرور پردازنده اعلام
+                  // می‌کنیم تا او آرایه‌ی خودش را آپدیت و در نهایت (به‌صورت
+                  // دوره‌ای) روی Redis flush کند. پردازنده تنها writer
+                  // نهایی Redis است، پس race بین دو سرور دیگر رخ نمی‌دهد.
+                  const removalResult =
+                    newLikesMap.removeFirstLike(telegramId);
+                  const list = removalResult
+                    ? removalResult.remainingLikers
+                    : [];
+
+                  removeFromNewLikesQueue.add({
+                    telegramId: +telegramId,
+                    likerTelegramId: +likerTelegramId,
                   });
-                  const buffer =
-                    protobuf.NewLikeProto.encode(message_).finish();
-                  await redisClient.set(`newLikes`, buffer);
-                  usersArrayFromRedis = updatedUsersArray;
-                }
-                // end delete from list ------------------------------
+                  // end delete from list ------------------------------
 
-                // show nextUser -------------------------------------
-                if (list[0]) {
-                  const photos = list[0].profileImages;
-                  const fullName = list[0].fullName;
-                  const age = list[0].age;
-                  const state = list[0].state;
-                  const bio = list[0].bio;
-                  const inviteCode_ = list[0].inviteCode;
-                  const textMessage = list[0]?.message;
+                  // show nextUser -------------------------------------
+                  if (list[0]) {
+                    const photos = list[0].profileImages;
+                    const fullName = list[0].fullName;
+                    const age = list[0].age;
+                    const state = list[0].state;
+                    const bio = list[0].bio;
+                    const inviteCode_ = list[0].inviteCode;
+                    const textMessage = list[0]?.message;
 
-                  await replyWithPhoto(
-                    ctx,
-                    next,
-                    photos,
-                    `${fullName}, ${age}, ${state} ${
-                      bio ? "\n" + bio : ""
-                    } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
-                  );
+                    await replyWithPhoto(
+                      ctx,
+                      next,
+                      photos,
+                      `${fullName}, ${age}, ${state} ${
+                        bio ? "\n" + bio : ""
+                      } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
+                    );
+                  } else {
+                    try {
+                      await reply(
+                        ctx,
+                        next,
+                        redisClient,
+                        "پایان لایک ها",
+                      );
+                      existingUser.currentStep.step = "menu";
+
+                      usersMap.set(telegramId, {
+                        time: Date.now(),
+                        user: existingUser,
+                      });
+
+                      await reply(
+                        ctx,
+                        next,
+                        redisClient,
+                        `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
+                        constants.MENU_KEYBOARD,
+                      );
+                    } catch (error) {
+                      console.log(error);
+                    }
+                  }
+                  // end show nextUser ---------------------------------
                 } else {
                   try {
                     await reply(
@@ -2243,75 +2250,49 @@ const processStatement = async (ctx, next) => {
                       "پایان لایک ها",
                     );
                     existingUser.currentStep.step = "menu";
-
                     usersMap.set(telegramId, {
                       time: Date.now(),
                       user: existingUser,
                     });
-
                     await reply(
                       ctx,
                       next,
                       redisClient,
                       `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                      MENU_KEYBOARD,
+                      constants.MENU_KEYBOARD,
                     );
                   } catch (error) {
                     console.log(error);
                   }
+
+                  return;
                 }
-                // end show nextUser ---------------------------------
               } else {
                 try {
-                  await reply(
-                    ctx,
-                    next,
-                    redisClient,
-                    "پایان لایک ها",
-                  );
                   existingUser.currentStep.step = "menu";
+
                   usersMap.set(telegramId, {
                     time: Date.now(),
                     user: existingUser,
                   });
+
+                  await reply(
+                    ctx,
+                    next,
+                    redisClient,
+                    "شما لایکی ندارید",
+                  );
+
                   await reply(
                     ctx,
                     next,
                     redisClient,
                     `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                    MENU_KEYBOARD,
+                    constants.MENU_KEYBOARD,
                   );
                 } catch (error) {
                   console.log(error);
                 }
-
-                return;
-              }
-            } else {
-              try {
-                await reply(
-                  ctx,
-                  next,
-                  redisClient,
-                  "شما لایکی ندارید",
-                );
-
-                existingUser.currentStep.step = "menu";
-
-                usersMap.set(telegramId, {
-                  time: Date.now(),
-                  user: existingUser,
-                });
-
-                await reply(
-                  ctx,
-                  next,
-                  redisClient,
-                  `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                  MENU_KEYBOARD,
-                );
-              } catch (error) {
-                console.log(error);
               }
             }
           } catch (error) {
@@ -2321,73 +2302,77 @@ const processStatement = async (ctx, next) => {
           try {
             // const getData = await redisClient.getBuffer(`newLikes`);
 
-            if (
-              Array.isArray(usersArrayFromRedis) &&
-              usersArrayFromRedis.length > 0
-            ) {
-              // await protobuf.loadNewLikeProto();
-              // const decodedMessage =
-              //   protobuf.NewLikeProto.decode(getData);
-              // let usersArrayFromRedis = decodedMessage.users || [];
-              const userFromRedis = usersArrayFromRedis.find(
-                (user) => +user.telegramId === +telegramId,
-              );
-              if (
-                userFromRedis &&
-                Array.isArray(userFromRedis.likers) &&
-                userFromRedis.likers.length > 0
-              ) {
-                // delete from list __________________ <<<
-                const list = userFromRedis.likers;
-                try {
-                  if (Array.isArray(list)) {
-                    list.shift(); // فقط آیتم اول حذف می‌شود
-                    // forYouList.set(telegramId, list); // دوباره در map قرار می‌دهیم (اختیاری)
+            {
+              const userFromRedis = newLikesMap.getEntry(telegramId);
+              if (userFromRedis) {
+                if (
+                  userFromRedis &&
+                  Array.isArray(userFromRedis.likers) &&
+                  userFromRedis.likers.length > 0
+                ) {
+                  // delete from list __________________ <<<
+                  // به‌جای بازنویسی کل آرایه و نوشتن مستقیم در Redis، فقط
+                  // نفر اول را از Map محلی حذف می‌کنیم و حذف را با یک job
+                  // به سرور پردازنده اعلام می‌کنیم (که تنها writer نهایی
+                  // Redis است و به‌صورت دوره‌ای flush می‌کند).
+                  const removedLikerTelegramId =
+                    userFromRedis.likers[0]?.telegramId;
+                  const removalResult =
+                    newLikesMap.removeFirstLike(telegramId);
+                  const list = removalResult
+                    ? removalResult.remainingLikers
+                    : [];
 
-                    const updatedUsersArray = usersArrayFromRedis.map(
-                      (user) => {
-                        if (+user.telegramId === +telegramId) {
-                          return {
-                            ...user,
-                            likers: list,
-                            time: Date.now(),
-                          };
-                        }
-                        return user;
-                      },
+                  removeFromNewLikesQueue.add({
+                    telegramId: +telegramId,
+                    likerTelegramId: +removedLikerTelegramId,
+                  });
+                  // delete from list __________________ >>>
+
+                  // show nextUser -------------------------------------
+                  if (list[0]) {
+                    const photos = list[0].profileImages;
+                    const fullName = list[0].fullName;
+                    const age = list[0].age;
+                    const state = list[0].state;
+                    const bio = list[0].bio;
+                    const inviteCode_ = list[0].inviteCode;
+                    const textMessage = list[0]?.message;
+
+                    await replyWithPhoto(
+                      ctx,
+                      next,
+                      photos,
+                      `${fullName}, ${age}, ${state} ${
+                        bio ? "\n" + bio : ""
+                      } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
                     );
+                  } else {
+                    try {
+                      await reply(
+                        ctx,
+                        next,
+                        redisClient,
+                        "پایان لایک ها",
+                      );
+                      existingUser.currentStep.step = "menu";
 
-                    const message_ = protobuf.NewLikeProto.create({
-                      users: updatedUsersArray,
-                    });
-                    const buffer =
-                      protobuf.NewLikeProto.encode(message_).finish();
-                    await redisClient.set(`newLikes`, buffer);
-                    usersArrayFromRedis = updatedUsersArray;
+                      usersMap.set(telegramId, {
+                        time: Date.now(),
+                        user: existingUser,
+                      });
+                      await reply(
+                        ctx,
+                        next,
+                        redisClient,
+                        `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
+                        constants.MENU_KEYBOARD,
+                      );
+                    } catch (error) {
+                      console.log(error);
+                    }
                   }
-                } catch (error) {
-                  console.log(error);
-                }
-                // delete from list __________________ >>>
-
-                // show nextUser -------------------------------------
-                if (list[0]) {
-                  const photos = list[0].profileImages;
-                  const fullName = list[0].fullName;
-                  const age = list[0].age;
-                  const state = list[0].state;
-                  const bio = list[0].bio;
-                  const inviteCode_ = list[0].inviteCode;
-                  const textMessage = list[0]?.message;
-
-                  await replyWithPhoto(
-                    ctx,
-                    next,
-                    photos,
-                    `${fullName}, ${age}, ${state} ${
-                      bio ? "\n" + bio : ""
-                    } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
-                  );
+                  // end show nextUser ---------------------------------
                 } else {
                   try {
                     await reply(
@@ -2397,7 +2382,6 @@ const processStatement = async (ctx, next) => {
                       "پایان لایک ها",
                     );
                     existingUser.currentStep.step = "menu";
-
                     usersMap.set(telegramId, {
                       time: Date.now(),
                       user: existingUser,
@@ -2407,65 +2391,62 @@ const processStatement = async (ctx, next) => {
                       next,
                       redisClient,
                       `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                      MENU_KEYBOARD,
+                      constants.MENU_KEYBOARD,
                     );
                   } catch (error) {
                     console.log(error);
                   }
+
+                  return;
                 }
-                // end show nextUser ---------------------------------
               } else {
                 try {
-                  await reply(
-                    ctx,
-                    next,
-                    redisClient,
-                    "پایان لایک ها",
-                  );
                   existingUser.currentStep.step = "menu";
+
                   usersMap.set(telegramId, {
                     time: Date.now(),
                     user: existingUser,
                   });
+
+                  await reply(
+                    ctx,
+                    next,
+                    redisClient,
+                    "شما لایکی ندارید",
+                  );
+
                   await reply(
                     ctx,
                     next,
                     redisClient,
                     `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                    MENU_KEYBOARD,
+                    constants.MENU_KEYBOARD,
                   );
                 } catch (error) {
                   console.log(error);
                 }
-
-                return;
-              }
-            } else {
-              try {
-                await reply(
-                  ctx,
-                  next,
-                  redisClient,
-                  "شما لایکی ندارید",
-                );
-                existingUser.currentStep.step = "menu";
-
-                usersMap.set(telegramId, {
-                  time: Date.now(),
-                  user: existingUser,
-                });
-
-                await reply(
-                  ctx,
-                  next,
-                  redisClient,
-                  `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
-                  MENU_KEYBOARD,
-                );
-              } catch (error) {
-                console.log(error);
               }
             }
+          } catch (error) {
+            console.log(error);
+          }
+        } else if (ctx?.message?.text === "رد کردن همه") {
+          try {
+            // مرحله‌ی تأیید؛ پاک‌سازی واقعی فقط بعد از تأیید صریح کاربر
+            // در step=confirmDismissAllLikes انجام می‌شود.
+            existingUser.currentStep.step = "confirmDismissAllLikes";
+            usersMap.set(telegramId, {
+              time: Date.now(),
+              user: existingUser,
+            });
+
+            await reply(
+              ctx,
+              next,
+              redisClient,
+              "⚠️ آیا مطمئن هستید؟ با این کار همه‌ی لایک‌های در انتظار شما پاک می‌شوند و دیگر قابل بازیابی نیستند.",
+              [[{ text: "بله، پاک کن" }], [{ text: "انصراف" }]],
+            );
           } catch (error) {
             console.log(error);
           }
@@ -2473,7 +2454,122 @@ const processStatement = async (ctx, next) => {
           try {
             await reply(ctx, next, redisClient, "لایک ها :", [
               [{ text: "❌" }, { text: "💚" }],
+              [{ text: "رد کردن همه" }],
             ]);
+          } catch (error) {
+            console.log(error);
+          }
+        }
+      } else if (userStep === "confirmDismissAllLikes") {
+        if (ctx?.message?.text === "بله، پاک کن") {
+          try {
+            const removedCount = newLikesMap.clearAll(telegramId);
+
+            // اعلام به سرور پردازنده تا آرایه‌ی خودش را هم خالی کند و
+            // در flush دوره‌ای بعدی روی Redis اعمال کند (پردازنده تنها
+            // writer نهایی است). از همان صف removeFromNewLikesQueue با
+            // فلگ clearAll استفاده می‌کنیم، نه یک صف جداگانه.
+            removeFromNewLikesQueue.add({
+              telegramId: +telegramId,
+              clearAll: true,
+            });
+
+            existingUser.currentStep.step = "menu";
+            usersMap.set(telegramId, {
+              time: Date.now(),
+              user: existingUser,
+            });
+
+            await reply(
+              ctx,
+              next,
+              redisClient,
+              removedCount > 0
+                ? `همه‌ی لایک‌ها پاک شد ✅ (${removedCount} مورد)`
+                : "لایکی برای پاک کردن نبود.",
+            );
+
+            await reply(
+              ctx,
+              next,
+              redisClient,
+              `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
+              constants.MENU_KEYBOARD,
+            );
+          } catch (error) {
+            console.log(error);
+          }
+        } else if (ctx?.message?.text === "انصراف") {
+          try {
+            // بازگشت امن به مرور لایک‌ها؛ اگر چیزی باقی مانده باشد همان
+            // نفر اول صف دوباره نمایش داده می‌شود (چیزی حذف نشده بود).
+            existingUser.currentStep.step = "notifications";
+            usersMap.set(telegramId, {
+              time: Date.now(),
+              user: existingUser,
+            });
+
+            const userFromRedis = newLikesMap.getEntry(telegramId);
+            if (
+              userFromRedis &&
+              Array.isArray(userFromRedis.likers) &&
+              userFromRedis.likers.length > 0
+            ) {
+              await reply(ctx, next, redisClient, "لغو شد.", [
+                [{ text: "❌" }, { text: "💚" }],
+                [{ text: "رد کردن همه" }],
+              ]);
+
+              const photos = userFromRedis.likers[0].profileImages;
+              const fullName = userFromRedis.likers[0].fullName;
+              const age = userFromRedis.likers[0].age;
+              const state = userFromRedis.likers[0].state;
+              const bio = userFromRedis.likers[0].bio;
+              const textMessage = userFromRedis.likers[0]?.message;
+              const inviteCode_ = userFromRedis.likers[0].inviteCode;
+
+              await replyWithPhoto(
+                ctx,
+                next,
+                photos,
+                `${fullName}, ${age}, ${state} ${
+                  bio ? "\n" + bio : ""
+                } ${textMessage ? `\n\nپیام کاربر به شما 💌 : ` : ""}${textMessage ? textMessage : ""} \n/user_${inviteCode_ || "not_found"}`,
+              );
+            } else {
+              existingUser.currentStep.step = "menu";
+              usersMap.set(telegramId, {
+                time: Date.now(),
+                user: existingUser,
+              });
+
+              await reply(
+                ctx,
+                next,
+                redisClient,
+                "لغو شد. شما لایکی ندارید",
+              );
+
+              await reply(
+                ctx,
+                next,
+                redisClient,
+                `1. ${"مشاهده پروفایل ها"}\n2. ${"پروفایل من"}\n3. ${"حالت خواب"}\n----------------------------\n4. ${"دوستان خود را دعوت کنید تا لایک های بیشتری دریافت کنید 😎"}`,
+                constants.MENU_KEYBOARD,
+              );
+            }
+          } catch (error) {
+            console.log(error);
+          }
+        } else {
+          try {
+            await reply(
+              ctx,
+              next,
+              redisClient,
+              "⚠️ آیا مطمئن هستید؟ با این کار همه‌ی لایک‌های در انتظار شما پاک می‌شوند و دیگر قابل بازیابی نیستند.",
+              [[{ text: "بله، پاک کن" }], [{ text: "انصراف" }]],
+            );
           } catch (error) {
             console.log(error);
           }
@@ -2513,7 +2609,7 @@ const processStatement = async (ctx, next) => {
       }
       const saveduser = await User.create({
         telegramId,
-        userName,
+        userName: userName || "",
         "likesLimit.giftLikeCount": 20,
         inviteCode: generateInviteCode(telegramId),
         inviteBy: inviteCode || null,
@@ -2576,9 +2672,10 @@ bot.command("matches", async (ctx, next) => {
       );
     }
 
-    const matchesIds = findUser.matches
+    const matches_ = findUser.matches
       ? findUser.matches.slice(0, 50)
       : [];
+    const matchesIds = matches_.map((m) => m.telegramId);
 
     if (!matchesIds.length) {
       return reply(
@@ -2686,7 +2783,7 @@ bot.hears(/\/user_(.+)/, async (ctx, next) => {
     const findBlock = blockedByMee.find((f) => f == +telegramId);
 
     try {
-      await ctx.replyWithPhoto(checkUrl(photo), {
+      await ctx.replyWithPhoto(photo, {
         caption: `${fullName}, ${age}, ${state} ${
           bio ? "\n" + bio : ""
         }\n/user_${userId || "not_found"}`,
@@ -2752,6 +2849,8 @@ bot.hears(/\/match_(.+)/, async (ctx, next) => {
     return;
   }
 
+  let targetTelegramId;
+
   try {
     const findTargetUser = await User.findOne({
       inviteCode: targetInviteCode,
@@ -2766,7 +2865,7 @@ bot.hears(/\/match_(.+)/, async (ctx, next) => {
       );
 
     const platform = findTargetUser?.platform ?? "bale";
-    const targetTelegramId = findTargetUser.telegramId;
+    targetTelegramId = findTargetUser.telegramId;
 
     let chat;
     try {
@@ -2931,15 +3030,13 @@ registerReportHandlers(bot, usersMap);
 
 const PORT = 3005;
 async function startServer() {
-
-  // newLikes in redis
-  await fillUsersArrayFromRedis();
+  // newLikes in redis -- بارگذاری اولیه‌ی Map لایک‌ها، پیش از bot.launch
+  await newLikesMap.loadNewLikesMapFromRedis(redisClient);
 
   bot
     .launch()
     .catch((err) => console.error("Bot launch error:", err));
   console.log("🤖 Bot launched after pool filled");
-
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`\n🚀 Pounes Matching Simulator v2.2`);
@@ -2948,19 +3045,23 @@ async function startServer() {
 }
 
 process.on("SIGINT", () => {
-  console.log("SIGINT");
+  console.log("SIGINT *************************");
   cleanupOldUsersFromMapAndSaveToDB(0);
 });
 process.on("SIGTERM", () => {
-  console.log("SIGTERM");
+  console.log("SIGTERM *************************");
   cleanupOldUsersFromMapAndSaveToDB(0);
 });
 process.on("uncaughtException", (err) => {
-  console.log(`uncaughtException: ${err.message}`);
+  console.log(
+    `uncaughtException: ${err.message} *************************`,
+  );
   cleanupOldUsersFromMapAndSaveToDB(0);
 });
 process.on("unhandledRejection", (reason) => {
-  console.log(`unhandledRejection: ${reason}`);
+  console.log(
+    `unhandledRejection: ${reason} *************************`,
+  );
   cleanupOldUsersFromMapAndSaveToDB(0);
 });
 

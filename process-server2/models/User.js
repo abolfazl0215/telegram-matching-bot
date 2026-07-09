@@ -16,6 +16,8 @@ const userSchema = new mongoose.Schema({
 
   rememberingMessage: { type: Number, default: 0 },
 
+  returnBoostAt: { type: Number, default: 0 },
+
   age: { type: Number },
   gender: { type: String, enum: ["male", "female"] },
   lookingFor: { type: String, enum: ["male", "female", "noMatter"] },
@@ -65,7 +67,6 @@ const userSchema = new mongoose.Schema({
   profileImages: [{ type: String }],
   profileImagesEdit: [{ type: String }],
 
-  // score: { type: Number, default: 0.5 },
   receivedLikes: [
     // maxLength = 100
     {
@@ -80,7 +81,12 @@ const userSchema = new mongoose.Schema({
   blockedByMe: [Number],
   blockedMe: [Number],
   reportedByMe: [Number],
-  matches: [Number],
+  matches: [
+    {
+      telegramId: Number,
+      at: Number,
+    },
+  ],
   likedAges: [Number],
 
   lastGetCandidatesAt: { type: Number, default: 1 },

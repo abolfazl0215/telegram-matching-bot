@@ -9,6 +9,9 @@ const { fillPool } = require("./utils/fillPool");
 const { updatePoolInRedis } = require("./utils/updatePoolInRedis");
 const { addToPool } = require("./utils/addToPool");
 const { getCandidates } = require("./utils/getCandidates.js");
+const {
+  recomputeAllPoolScores,
+} = require("./utils/recomputeAllPoolScores");
 
 const monitoringRoute = require("./routes/monitoring.js");
 
@@ -16,16 +19,24 @@ const {
   redisClient,
   cleanupOldUsersQueue,
   newLikeQueue,
+  removeFromNewLikesQueue,
   sendMessageToAllQueue,
   addToPoolQueue,
   requestToFillForYouList,
   fillForYouList,
+  removeFromExploreQueue,
+  invalidateScoreQueue,
 } = require("./config/redis");
 
 // config dotenv
 require("dotenv").config();
 
 const { computeScore } = require("./utils/computeScore");
+// FIX #4 (invalidation): برای sync کردن فوری baseScore کاربری که یه
+// لایک جدید دریافت کرده، بدون نیاز به صبر کردن تا چرخه‌ی بعدی fillPool.
+const {
+  invalidatePoolUserScore,
+} = require("./utils/invalidatePoolUserScore");
 const state = require("./app/state");
 const {
   scheduleCleanupStart,
@@ -41,8 +52,10 @@ const {
 const {
   checkNewLikesForSendNotif,
 } = require("./tools/checkNewLikesForSendNotif.js");
+const newLikesStore = require("./utils/newLikesStore");
 const { replyBot } = require("./telegram_methods/replyBot.js");
 const Pictures = require("./models/Pictures.js");
+const { removeFromExplore } = require("./utils/removeFromExplore.js");
 
 const {
   usersMap,
@@ -80,37 +93,12 @@ app.use((req, res, next) => {
 
 app.use("/", monitoringRoute);
 
-let usersArrayFromRedis = [];
-const getNewLikesFromProtoBuff = async () => {
-  const getData = await redisClient.getBuffer("newLikes");
-
-  if (!Buffer.isBuffer(getData)) {
-    return res.json({
-      likes: [],
-    });
-  }
-
-  protobuff.loadNewLikeProto();
-
-  const decodedMessage = protobuff.NewLikeProto.decode(getData);
-
-  // تبدیل protobuf به object js عادی
-  const data = protobuff.NewLikeProto.toObject(decodedMessage, {
-    longs: Number, // int64 -> number
-    enums: String,
-    defaults: true,
-    arrays: true,
-    objects: true,
-  });
-
-  usersArrayFromRedis = data.users || [];
-};
-setTimeout(async () => {
-  await getNewLikesFromProtoBuff();
-}, 0);
-setInterval(async () => {
-  await getNewLikesFromProtoBuff();
-}, 10000);
+// از این پس newLikesStore (utils/newLikesStore.js) مالک آرایه‌ی لایک‌های
+// جدید است. فقط یک‌بار، در startServer و پیش از ثبت پردازشگرهای صف
+// newLikeQueue / removeFromNewLikesQueue، از روی Redis بارگذاری می‌شود؛
+// دیگر هیچ pull دوره‌ای از Redis نداریم، چون این پردازشگر تنها writer
+// نهایی کلید "newLikes" است و pull دوره‌ای می‌توانست تغییرات تازه‌ی
+// هنوز-flush-نشده را overwrite کند.
 
 app.use("/", async (req, res) => {
   res.send("hello");
@@ -193,137 +181,66 @@ const newLikeQueueController = async ({
         Promise.resolve(Date.now()),
       ]);
 
+      const newLikeEntry = {
+        fromTelegramId: +liker.telegramId,
+        at,
+        likerScore: userScore,
+      };
+
       await User.updateOne(
         { telegramId: +telegramId },
         {
           $push: {
             receivedLikes: {
-              $each: [
-                {
-                  fromTelegramId: +liker.telegramId,
-                  at,
-                  likerScore: userScore,
-                },
-              ],
+              $each: [newLikeEntry],
               $position: 0,
               $slice: 100,
             },
           },
         },
       );
+
+      // ── FIX #4 (invalidation) ────────────────────────────────────
+      // همون تغییری که به Mongo زدیم ($push با $position:0 و $slice:100)
+      // رو دقیقاً به همون شکل روی آبجکت in-memory کاربر در pool هم mirror
+      // می‌کنیم تا receivedLikes داخل pool با DB هم‌خوان بمونه، و بعد
+      // baseScore این کاربر رو همون لحظه دوباره حساب می‌کنیم. اگه این
+      // کاربر فعلاً در pool نباشه (مثلاً هنوز به فید کسی نرسیده)،
+      // invalidatePoolUserScore فقط false برمی‌گردونه و هیچ خطایی
+      // نمی‌ده؛ baseScoreش وقتی وارد pool بشه (addToPool) یا در چرخه‌ی
+      // بعدی fillPool درست محاسبه میشه.
+      invalidatePoolUserScore(+telegramId, (user) => {
+        if (!Array.isArray(user.receivedLikes)) {
+          user.receivedLikes = [];
+        }
+        user.receivedLikes.unshift(newLikeEntry);
+        if (user.receivedLikes.length > 100) {
+          user.receivedLikes.length = 100;
+        }
+      });
     } catch (err) {
       console.error(`[receivedLikes] failed for ${telegramId}:`, err);
     }
 
-    const findLike = usersArrayFromRedis.find(
-      (f) => Number(f.telegramId) === Number(telegramId),
-    );
-
-    if (findLike) {
-      const findLiker = findLike.likers.find(
-        (f) => Number(f.telegramId) === Number(liker.telegramId),
-      );
-
-      if (!findLiker) {
-        findLike.likers.push({
-          _id: liker._id,
-          telegramId: Number(liker.telegramId),
-          fullName: liker.fullName,
-          userName: liker.userName,
-          age: liker.age,
-          gender: liker.gender,
-          lookingFor: liker.lookingFor,
-          state: liker.state,
-
-          sleep: liker.sleep,
-
-          bio: liker.bio,
-          profileImages: liker.profileImages,
-          inviteCode: liker.inviteCode,
-
-          platform: liker.platform,
-          fcmToken: liker.fcmToken,
-
-          message: strMessage || "",
-        });
-      }
-    } else {
-      usersArrayFromRedis.push({
-        telegramId: Number(telegramId),
-        time: Date.now(),
-        likers: [
-          {
-            _id: liker._id,
-            telegramId: liker.telegramId,
-            fullName: liker.fullName,
-            userName: liker.userName,
-            age: liker.age,
-            gender: liker.gender,
-            lookingFor: liker.lookingFor,
-            state: liker.state,
-
-            sleep: liker.sleep,
-
-            bio: liker.bio,
-            profileImages: liker.profileImages,
-            inviteCode: liker.inviteCode,
-
-            platform: liker.platform,
-            fcmToken: liker.fcmToken,
-
-            message: strMessage || "",
-          },
-        ],
-      });
-    }
-
-    // اعتبارسنجی داده‌ها
-    const errMsg = protobuff.NewLikeProto.verify({
-      users: usersArrayFromRedis,
-    });
-    if (errMsg) {
-      console.log("Protobuf validation error:", errMsg);
-      return;
-    }
-
-    // تبدیل به protobuf و ذخیره در ردیس
-    const message_ = protobuff.NewLikeProto.create({
-      users: usersArrayFromRedis,
-    });
-    const buffer = protobuff.NewLikeProto.encode(message_).finish();
-    await redisClient.set("newLikes", buffer);
+    // به‌جای دستکاری مستقیم آرایه و نوشتن فوری در Redis (که هم race با
+    // نوشتن سمت ربات داشت و هم به‌ازای هر لایک یک بار کل آرایه رو در
+    // Redis می‌نوشت)، حالا فقط newLikesStore رو صدا می‌زنیم؛ خودش دوپلیکیت
+    // رو چک می‌کنه و به‌صورت دوره‌ای (نه فوری) flush می‌شه.
+    newLikesStore.addLike(telegramId, liker, strMessage);
   } catch (error) {
     console.log(error);
   }
 };
 
-newLikeQueue.process(2, async (job) => {
-  const { telegramId, liker, message } = job.data;
-  try {
-    await newLikeQueueController({ telegramId, liker, message });
-  } catch (error) {
-    console.error("Error processing explore queue:", error);
-  }
-});
-
-addToPoolQueue.process(2, async (job) => {
-  const { user } = job.data;
-  try {
-    await addToPool(user);
-  } catch (error) {
-    console.error("Error processing add to pool :", error);
-  }
-});
-
-requestToFillForYouList.process(2, async (job) => {
-  const { user } = job.data;
-  try {
-    const candidates = await getCandidates(user);
-    fillForYouList.add({ telegramId: user.telegramId, candidates });
-  } catch (error) {
-    console.error("Error processing add to pool :", error);
-  }
-});
+// توجه: newLikeQueue، addToPoolQueue، removeFromExploreQueue،
+// requestToFillForYouList و removeFromNewLikesQueue عمداً اینجا ثبت
+// (process) نمی‌شوند. newLikeQueue و removeFromNewLikesQueue چون از این
+// پس به newLikesStore وابسته‌اند که باید پیش از پردازش هر job از Redis
+// بارگذاری شده باشد (وگرنه یک job ممکن است قبل از بارگذاری اولیه پردازش
+// شود و بعد بارگذاری آن را overwrite کند). بقیه هم چون به pool/state ای
+// وابسته‌اند که fillPool() می‌سازد. ثبت همه‌ی این‌ها به داخل startServer()
+// منتقل شده تا جاب‌های موجود در صف Redis زودتر از موعد، روی state ناقص
+// پردازش نشوند.
 
 const sendMessageToAllQueueController = async ({
   telegramId,
@@ -570,11 +487,11 @@ setInterval(async () => {
   // %%%%%%%%%%%%
   try {
     console.log("start check new like");
-    await checkNewLikesForSendNotif(
-      redisClient,
-      protobuff.NewLikeProto,
-      protobuff.loadNewLikeProto,
-    );
+    // از این پس به‌جای اینکه خودش مستقل از Redis بخونه، آرایه‌ی
+    // درون‌حافظه‌ای newLikesStore (که همیشه تازه‌ترینه) رو می‌گیره؛
+    // هر تغییری (حذف کاربر قدیمی/بلاک‌شده و ...) هم از طریق store اعمال
+    // می‌شه تا در flush دوره‌ای بعدی خودش رو در Redis منعکس کنه.
+    await checkNewLikesForSendNotif(redisClient, newLikesStore);
   } catch (error) {
     console.log(error);
   }
@@ -587,6 +504,126 @@ async function startServer() {
   await fillPool();
   console.timeEnd("ّFill pool started in");
 
+  // ── newLikesStore ──────────────────────────────────────────────
+  // باید پیش از ثبت newLikeQueue.process / removeFromNewLikesQueue.process
+  // از روی Redis بارگذاری شود، وگرنه یک job که زودتر از موعد پردازش شود
+  // با بارگذاری اولیه overwrite می‌شود و آن لایک/حذف گم می‌شود.
+  await newLikesStore.loadFromRedis(redisClient);
+  // flush دوره‌ای؛ فقط وقتی چیزی تغییر کرده باشد واقعاً در Redis می‌نویسد.
+  newLikesStore.startPeriodicFlush(redisClient, 15000);
+
+  newLikeQueue.process(2, async (job) => {
+    const { telegramId, liker, message } = job.data;
+    try {
+      await newLikeQueueController({ telegramId, liker, message });
+    } catch (error) {
+      console.error("Error processing explore queue:", error);
+    }
+  });
+
+  removeFromNewLikesQueue.process(5, async (job) => {
+    const { telegramId, likerTelegramId, clearAll } = job.data;
+    try {
+      // «رد کردن همه»: به‌جای اضافه کردن یک صف کاملاً جدید فقط برای این
+      // یک حالت، همین صف موجود را با یک فلگ گسترش دادیم — چون از نظر
+      // معنایی همچنان «حذف از لیست لایک‌های در انتظار» است، فقط دسته‌جمعی.
+      if (clearAll) {
+        const cleared = newLikesStore.clearAll(telegramId);
+        if (!cleared) {
+          console.log(
+            `[removeFromNewLikesQueue] چیزی برای پاک کردن همه پیدا نشد: target=${telegramId}`,
+          );
+        }
+        return;
+      }
+
+      const removed = newLikesStore.removeLike(
+        telegramId,
+        likerTelegramId,
+      );
+      if (!removed) {
+        console.log(
+          `[removeFromNewLikesQueue] چیزی برای حذف پیدا نشد: target=${telegramId} liker=${likerTelegramId}`,
+        );
+      }
+    } catch (error) {
+      console.error(
+        "Error processing removeFromNewLikesQueue:",
+        error,
+      );
+    }
+  });
+
+  // این پردازشگرها فقط بعد از تکمیل fillPool ثبت می‌شوند، چون addToPool،
+  // removeFromExplore و getCandidates روی pool/state ای کار می‌کنند که
+  // fillPool می‌سازد. اگر زودتر ثبت شوند و در Redis جابی منتظر باشد،
+  // Bull بلافاصله (حتی قبل از پایان fillPool) آن را پردازش می‌کند.
+  addToPoolQueue.process(2, async (job) => {
+    const { user } = job.data;
+    try {
+      await addToPool(user);
+    } catch (error) {
+      console.error("Error processing add to pool :", error);
+    }
+  });
+
+  removeFromExploreQueue.process(2, async (job) => {
+    const { user } = job.data;
+    try {
+      await removeFromExplore(user);
+    } catch (error) {
+      console.error("Error processing add to pool :", error);
+    }
+  });
+
+  // ── FIX #4 (invalidation) ────────────────────────────────────────
+  // مصرف‌کننده‌ی صف invalidateScoreQueue. هر سرور دیگری (مثل بات‌سرور)
+  // که یه فیلد اثرگذار روی computeScore رو برای یه کاربر عوض می‌کنه
+  // (خرید اشتراک، تکمیل پروفایل، ساخته‌شدن match جدید و ...) باید یه
+  // job با شکل { telegramId, patch } به این صف اضافه کنه:
+  //
+  //   invalidateScoreQueue.add({
+  //     telegramId: 123456,
+  //     patch: { subscriptionExpireTime: Date.now() + 30*86400000 },
+  //   });
+  //
+  // patch یه آبجکت ساده از فیلدهایی هست که باید روی user در pool
+  // merge (Object.assign) بشن؛ بعدش computeScore دوباره برای همون یک
+  // نفر حساب میشه. اگه کاربر فعلاً در pool نباشه، کاری انجام نمیشه
+  // (چون invalidatePoolUserScore خودش false برمی‌گردونه) و baseScore
+  // این کاربر هروقت وارد pool بشه (addToPool) یا در چرخه‌ی بعدی
+  // fillPool، به‌درستی محاسبه خواهد شد.
+  invalidateScoreQueue.process(5, async (job) => {
+    const { telegramId, patch } = job.data;
+    try {
+      const changed = invalidatePoolUserScore(telegramId, (user) => {
+        if (patch && typeof patch === "object") {
+          Object.assign(user, patch);
+        }
+      });
+      if (!changed) {
+        console.log(
+          `[invalidateScoreQueue] user ${telegramId} not in pool yet; skipped.`,
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[invalidateScoreQueue] Failed for telegramId ${telegramId}:`,
+        error,
+      );
+    }
+  });
+
+  requestToFillForYouList.process(5, async (job) => {
+    const { user } = job.data;
+    try {
+      const candidates = await getCandidates(user);
+      fillForYouList.add({ telegramId: user.telegramId, candidates });
+    } catch (error) {
+      console.error("Error processing add to pool :", error);
+    }
+  });
+
   setInterval(
     async () => {
       await updatePoolInRedis();
@@ -594,10 +631,40 @@ async function startServer() {
     5 * 60 * 1000,
   );
 
+  // ── RECOMPUTE سبک دوره‌ای ────────────────────────────────────────
+  // رفرش baseScore تمام کاربرهای pool، بدون I/O، برای جلوگیری از
+  // فریز شدن امتیازهای وابسته به گذر زمان (activity/cold-start/...)
+  setInterval(
+    async () => {
+      await recomputeAllPoolScores();
+    },
+    10 * 60 * 1000, // هر ۱۰ دقیقه
+  );
+
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`\n🚀 Pounes Matching Simulator v2.2`);
     console.log(`📡 http://localhost:${PORT}`);
   });
 }
+
+// ── Graceful shutdown ──────────────────────────────────────────────
+// چون flush آرایه‌ی newLikes حالا دوره‌ای (هر ۱۵ ثانیه) است نه فوری،
+// ممکن است در لحظه‌ی ری‌استارت/دیپلوی، چند ثانیه‌ی آخر هنوز flush نشده
+// باشد. برای جلوگیری از گم‌شدن آن تغییرات، پیش از خروج یک بار force
+// flush می‌کنیم.
+async function gracefulShutdown(signal) {
+  try {
+    console.log(
+      `[shutdown] دریافت ${signal}، در حال flush نهایی newLikes...`,
+    );
+    await newLikesStore.flushToRedis(redisClient, true);
+  } catch (error) {
+    console.error("[shutdown] خطا در flush نهایی:", error);
+  } finally {
+    process.exit(0);
+  }
+}
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 
 startServer();

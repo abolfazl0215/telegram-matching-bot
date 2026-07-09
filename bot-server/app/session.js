@@ -37,7 +37,7 @@ async function cleanupOldUsersFromMapAndSaveToDB(time = 30) {
       entries.map(async ([telegramId, userData]) => {
         if (now - userData.time < thresholdMs) return;
         try {
-          cleanupOldUsersQueue.add({
+          await cleanupOldUsersQueue.add({
             telegramId,
             currentUser: userData.user,
           });

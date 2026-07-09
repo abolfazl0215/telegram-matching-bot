@@ -7,18 +7,15 @@ const protobuf = require("protobufjs");
 const usersMap = require("../utils/usersMap");
 const { reply } = require("../telegram_methods/reply");
 const Pictures = require("../models/Pictures");
-const { checkUrl } = require("../utils/checkUrl");
 const { lastTimeAddProfileToList } = require("../app/state");
-const { addToPool } = require("../utils/addToPool");
 const {
   addToPoolQueue,
   requestToFillForYouList,
 } = require("../config/redis");
+const constants = require("../bot/constants");
 const {
-  SEARCH_KEYBOARD,
-  MY_PROFILE_MENU_KEYBOARD,
-} = require("../bot/constants");
-const { replyWithPhoto } = require("../telegram_methods/replyWithPhoto");
+  replyWithPhoto,
+} = require("../telegram_methods/replyWithPhoto");
 
 const SUPPORT_ERROR_MSG =
   "مشکلی پیش آمده است لطفا به پشتیبانی اطلاع دهید (آیدی پشتیبانی در بیو)";
@@ -84,7 +81,14 @@ const states = [
 ];
 
 const PREV_STEP_BTN = { text: "مرحله قبلی" };
-const kbAges = (chunkArray, ages) => [...chunkArray(ages, 4)];
+const kbAges = (chunkArray, ages) => [
+  [
+    {
+      text: "بازگشت",
+    },
+  ],
+  ...chunkArray(ages, 4),
+];
 const kbGenderFilter =
   process.env.PLATFORM == "bale"
     ? [
@@ -120,7 +124,6 @@ const kbConfirmProfile =
     ? [[{ text: "بله" }, { text: "ویرایش پروفایلم" }]]
     : [[{ text: "ویرایش پروفایلم" }, { text: "بله" }]];
 
-const kbEditMenu = MY_PROFILE_MENU_KEYBOARD;
 const EDIT_MENU_TEXT = `1. ${"مشاهده پروفایل ها"} \n2. ${"ویرایش پروفایلم"} \n3. ${"تغییر عکس من"}`;
 const BIO_PROMPT_TEXT = `درباره خودت بیشتر بگو. دنبال چه کسی می‌گردی؟ می‌خوای چیکار کنی؟ من بهترین مچ‌ها رو پیدا می‌کنم برات.`;
 
@@ -184,9 +187,7 @@ const editProfileInBot = async (
     const caption = `${fullName}, ${age}, ${state} ${bio ? "\n" + bio : ""} `;
     const url = photoUrl ?? user.profileImages?.[0];
 
-    await replyWithPhoto(ctx, next, user.profileImages,caption )
-
-
+    await replyWithPhoto(ctx, next, user.profileImages, caption);
   };
 
   const step = savedUser.currentStep?.step;
@@ -197,7 +198,19 @@ const editProfileInBot = async (
     const validAge =
       text && Number(text) && ages.includes(Number(text));
 
-    if (!validAge) {
+    if (text === "بازگشت") {
+      savedUser.currentStep.flow =
+        step == "search" ? "bot" : "editProfile";
+      savedUser.currentStep.step = "editProfileMenu";
+      usersMap.set(telegramId, { time: Date.now(), user: savedUser });
+      await reply(
+        ctx,
+        next,
+        redisClient,
+        EDIT_MENU_TEXT,
+        constants.MY_PROFILE_MENU_KEYBOARD,
+      );
+    } else if (!validAge) {
       await changeEditProfileStepAndSaveChanges("age");
       await safeReply(
         "خطا ، لطفا یکی از اعداد زیر را انتخاب کنید",
@@ -261,6 +274,10 @@ const editProfileInBot = async (
             ? "male"
             : "noMatter";
 
+      if (savedUser.lookingFor != lookingFor_) {
+        requestToFillForYouList.add({ user: savedUser });
+      }
+
       await changeEditProfileStepAndSaveChanges(
         "state",
         "lookingFor",
@@ -290,6 +307,9 @@ const editProfileInBot = async (
       await changeEditProfileStepAndSaveChanges("lookingFor");
       await safeReply("به دنبال چه کسی می گردید ؟", kbGenderFilter);
     } else if (findState) {
+      if (savedUser.state != findState?.english) {
+        requestToFillForYouList.add({ user: savedUser });
+      }
       await changeEditProfileStepAndSaveChanges(
         "name",
         "state",
@@ -475,7 +495,7 @@ const editProfileInBot = async (
               next,
               redisClient,
               "در حال حستجوی افراد ...",
-              SEARCH_KEYBOARD,
+              constants.SEARCH_KEYBOARD,
             );
 
             const nextCandidate = forYouList.get(telegramId)[0];
@@ -503,7 +523,7 @@ const editProfileInBot = async (
           next,
           redisClient,
           EDIT_MENU_TEXT,
-          kbEditMenu,
+          constants.MY_PROFILE_MENU_KEYBOARD,
         );
       } catch (error) {
         console.log(error);
