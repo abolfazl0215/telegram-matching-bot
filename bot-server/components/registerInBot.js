@@ -15,6 +15,7 @@ const {
 const {
   replyWithPhoto,
 } = require("../telegram_methods/replyWithPhoto");
+const { trackNewUser } = require("../utils/statsTracker.js");
 
 // ============================================================
 // Constants & static data
@@ -667,15 +668,11 @@ const registerInBot = async (
         const bio = savedUser?.bio || "";
 
         await replyWithPhoto(
-              ctx,
-              next,
-              photos,
-              `${fullName}, ${age}, ${state} ${
-                bio ? "\n" + bio : ""
-              } `,
-            );
-
-
+          ctx,
+          next,
+          photos,
+          `${fullName}, ${age}, ${state} ${bio ? "\n" + bio : ""} `,
+        );
 
         ctx.reply("درسته ؟", {
           reply_markup: {
@@ -751,6 +748,11 @@ const registerInBot = async (
           time: Date.now(),
           user: savedUser,
         });
+
+        // این نقطه دقیقاً یک‌بار در طول عمر کاربر اجرا می‌شود (لحظه‌ی
+        // تکمیل ثبت‌نام)، پس بهترین جا برای شمارش «کاربر جدید امروز»
+        // با جنسیت واقعی (نه لحظه‌ی ساخت رکورد خام که هنوز جنسیت ندارد).
+        trackNewUser(savedUser.gender);
 
         // پیام خوش‌آمدگویی ویژه برای خانم‌های تهران/البرز
         if (

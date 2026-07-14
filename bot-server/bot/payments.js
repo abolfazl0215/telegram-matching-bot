@@ -4,6 +4,7 @@ const { PROVIDER_TOKEN } = require("../app/config");
 const { redisClient } = require("../config/redis");
 const Payments = require("../models/Payments");
 const usersMap = require("../utils/usersMap");
+const { trackSubscription } = require("../utils/statsTracker");
 
 const SUBSCRIPTION_PACKAGES = [
   {
@@ -186,6 +187,12 @@ function registerPaymentHandlers(bot) {
           time: Date.now(),
           fee: q.total_amount,
         });
+      } catch (error) {
+        console.log({ error });
+      }
+
+      try {
+        trackSubscription(findUser.gender, q.total_amount);
       } catch (error) {
         console.log({ error });
       }

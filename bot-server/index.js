@@ -1,4 +1,5 @@
 const express = require("express");
+const path = require("path");
 const cors = require("cors");
 const http = require("http");
 const mongoose = require("mongoose");
@@ -47,6 +48,15 @@ const { AGES, BOT_INVITE_BASE } = require("./app/config.js");
 const { registerReportHandlers } = require("./bot/reports.js");
 const editProfileInBot = require("./components/editProfileInBot.js");
 const constants = require("./bot/constants.js");
+const {
+  startStatsTracker,
+  trackActivity,
+  trackLike,
+  trackNope,
+  trackMatch,
+  getLiveSnapshot,
+} = require("./utils/statsTracker.js");
+const Stats = require("./models/Stats.js");
 
 const {
   replyWithPhoto,
@@ -84,6 +94,59 @@ app.use((req, res, next) => {
   next();
 });
 
+// مسیر آمار (JSON). دسترسی با کلید محرمانه‌ی TRACKING_SECRET در .env
+// کنترل می‌شود؛ اگر تنظیم نشده باشد این مسیر کاملاً بسته می‌ماند.
+app.get("/tracking", async (req, res) => {
+  try {
+    const requiredKey = process.env.TRACKING_SECRET;
+    if (!requiredKey || req.query.key !== requiredKey) {
+      return res.status(403).json({ error: "دسترسی غیرمجاز" });
+    }
+
+    const days = Math.min(parseInt(req.query.days, 10) || 30, 90);
+    const todayStr = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Tehran",
+    }).format(new Date());
+
+    const history = await Stats.find({})
+      .sort({ date: -1 })
+      .limit(days)
+      .lean();
+
+    const todayDoc = history.find((d) => d.date === todayStr) || null;
+
+    res.json({
+      today: {
+        date: todayStr,
+        ...(todayDoc || {}),
+        // عدد لحظه‌ای فعال‌های امروز، حتی قبل از آخرین flush
+        liveActiveUsersToday: getLiveSnapshot().activeUsersToday,
+      },
+      // از قدیم به جدید، مناسب برای رسم نمودار روند
+      history: history.reverse(),
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ error: "خطای داخلی سرور" });
+  }
+});
+
+// فایل‌های استاتیک داشبورد (مثل Chart.js لوکال) از این مسیر سرو می‌شن
+// تا هیچ وابستگی‌ای به CDN خارجی نداشته باشیم.
+app.use(
+  "/tracking/vendor",
+  express.static(path.join(__dirname, "public", "vendor")),
+);
+
+// صفحه‌ی HTML داشبورد؛ خودش دیتا نداره، فقط از /tracking (که با
+// کلید محافظت می‌شه) دیتا رو fetch می‌کنه. برای همین این مسیر خودش
+// نیازی به چک کلید نداره.
+app.get("/tracking/dashboard", (req, res) => {
+  res.sendFile(
+    path.join(__dirname, "public", "tracking-dashboard.html"),
+  );
+});
+
 app.use("/", async (req, res) => {
   res.send("hello");
 });
@@ -91,6 +154,7 @@ app.use("/", async (req, res) => {
 loadBlockedUsers();
 registerLocalQueueWorkers();
 scheduleCleanupStart();
+startStatsTracker();
 
 const ages = AGES;
 
@@ -278,6 +342,11 @@ const processStatement = async (ctx, next) => {
     return;
   }
   // check if user is banned cant use bot >>>>>>>>>
+
+  // ثبت «فعال بودن امروز» برای آمار /tracking؛ داخلش خودش جلوی
+  // شمارش تکراری در طول روز رو می‌گیره، پس صدا زدنش اینجا (روی هر
+  // پیام) هیچ فشار اضافه‌ای به دیتابیس وارد نمی‌کنه.
+  trackActivity(telegramId, existingUser?.gender);
 
   // if user changed userName update it in database <<<<<<<<<<<
   if (existingUser && userName !== existingUser?.userName) {
@@ -713,6 +782,8 @@ const processStatement = async (ctx, next) => {
             user: user,
           });
 
+          trackLike(user?.gender);
+
           //  add to liked by me _____________________________ >>>>>
 
           // ** for candidate _________________________________________
@@ -861,6 +932,8 @@ const processStatement = async (ctx, next) => {
             time: Date.now(),
             user: user,
           });
+
+          trackNope(user?.gender);
           //  add to noped by me _____________________________ >>>>>
 
           forYouList.set(
@@ -1042,6 +1115,8 @@ const processStatement = async (ctx, next) => {
               time: Date.now(),
               user: user,
             });
+
+            trackLike(user?.gender);
 
             //  add to liked by me _____________________________ >>>>>
             // newLike for notification
@@ -1970,6 +2045,12 @@ const processStatement = async (ctx, next) => {
                   const bio = userFromRedis.likers[0]?.bio || "";
                   const textMessage =
                     userFromRedis.likers[0]?.message;
+
+                  // ورود به این بلوک یعنی هر دو طرف همدیگر را لایک
+                  // کرده‌اند، پس دقیقاً همین‌جا یک رویداد مچ جدید است
+                  // (فقط یک‌بار، نه در هر دو محل unshift پایین‌تر که
+                  // برای reorder هم اجرا می‌شوند).
+                  trackMatch(existingUser?.gender, gender);
 
                   // send notification
                   // if (fcmToken) {

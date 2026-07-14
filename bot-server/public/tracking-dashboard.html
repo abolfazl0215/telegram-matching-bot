@@ -1,0 +1,851 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>داشبورد آمار پونس</title>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+    <link
+      href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css"
+      rel="stylesheet"
+    />
+    <script src="/tracking/vendor/chart.umd.js"></script>
+    <style>
+      :root {
+        --bg: #140f17;
+        --bg-soft: #1b1420;
+        --card: #20182587;
+        --card-solid: #211826;
+        --line: #3a2c40;
+        --ink: #f3eef4;
+        --ink-dim: #b7a9be;
+        --ink-faint: #7c6b84;
+        --rose: #ff5c82;
+        --rose-soft: #ff5c821a;
+        --male: #5fc7e0;
+        --male-soft: #5fc7e01a;
+        --female: #ff7ca8;
+        --female-soft: #ff7ca81a;
+        --good: #5fe0a8;
+        --warn: #f2c46b;
+        --radius: 18px;
+        --radius-sm: 12px;
+        font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          radial-gradient(
+            circle at 15% 0%,
+            #3a1e33 0%,
+            transparent 45%
+          ),
+          radial-gradient(
+            circle at 100% 20%,
+            #1e2a3a 0%,
+            transparent 40%
+          ),
+          var(--bg);
+        color: var(--ink);
+        min-height: 100vh;
+        padding: 28px 20px 80px;
+      }
+
+      .wrap {
+        max-width: 1180px;
+        margin: 0 auto;
+      }
+
+      /* ---------- Header ---------- */
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 16px;
+        margin-bottom: 28px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .brand .mark {
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, var(--rose), #ff9e6d);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 22px;
+        box-shadow: 0 6px 18px -6px #ff5c8266;
+      }
+      .brand h1 {
+        margin: 0;
+        font-size: 19px;
+        font-weight: 700;
+      }
+      .brand p {
+        margin: 2px 0 0;
+        font-size: 12.5px;
+        color: var(--ink-faint);
+      }
+
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      select,
+      .refresh-btn {
+        background: var(--card-solid);
+        border: 1px solid var(--line);
+        color: var(--ink);
+        border-radius: 10px;
+        padding: 9px 14px;
+        font-family: inherit;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .refresh-btn {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .refresh-btn:hover,
+      select:hover {
+        border-color: var(--rose);
+      }
+      #lastUpdate {
+        font-size: 12px;
+        color: var(--ink-faint);
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--good);
+        display: inline-block;
+        margin-left: 5px;
+        box-shadow: 0 0 0 0 var(--good);
+        animation: pulse 2s infinite;
+      }
+      @keyframes pulse {
+        0% {
+          box-shadow: 0 0 0 0 #5fe0a866;
+        }
+        70% {
+          box-shadow: 0 0 0 6px #5fe0a800;
+        }
+        100% {
+          box-shadow: 0 0 0 0 #5fe0a800;
+        }
+      }
+
+      /* ---------- Key gate ---------- */
+      #gate {
+        max-width: 420px;
+        margin: 14vh auto;
+        text-align: center;
+        background: var(--card-solid);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 32px 26px;
+      }
+      #gate .mark {
+        width: 52px;
+        height: 52px;
+        border-radius: 16px;
+        margin: 0 auto 16px;
+        background: linear-gradient(135deg, var(--rose), #ff9e6d);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 26px;
+      }
+      #gate h2 {
+        margin: 0 0 6px;
+        font-size: 17px;
+      }
+      #gate p {
+        color: var(--ink-faint);
+        font-size: 13px;
+        margin: 0 0 18px;
+        line-height: 1.9;
+      }
+      #gate input {
+        width: 100%;
+        background: var(--bg-soft);
+        border: 1px solid var(--line);
+        color: var(--ink);
+        border-radius: 10px;
+        padding: 12px 14px;
+        font-family: inherit;
+        font-size: 14px;
+        margin-bottom: 12px;
+        text-align: center;
+      }
+      #gate button {
+        width: 100%;
+        background: var(--rose);
+        border: none;
+        color: #1a0e13;
+        font-weight: 700;
+        border-radius: 10px;
+        padding: 12px;
+        font-size: 14px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      #gateError {
+        color: #ff8a8a;
+        font-size: 12.5px;
+        margin-top: 10px;
+        display: none;
+      }
+
+      /* ---------- Cards ---------- */
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 14px;
+        margin-bottom: 26px;
+      }
+      .card {
+        background: var(--card-solid);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 18px 18px 16px;
+        position: relative;
+        overflow: hidden;
+      }
+      .card::before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto 0;
+        height: 3px;
+        background: var(--accent, var(--rose));
+      }
+      .card .label {
+        font-size: 12.5px;
+        color: var(--ink-faint);
+        margin-bottom: 10px;
+      }
+      .card .value {
+        font-size: 30px;
+        font-weight: 700;
+        line-height: 1;
+      }
+      .card .value small {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--ink-dim);
+        margin-right: 4px;
+      }
+      .card .split {
+        display: flex;
+        gap: 10px;
+        margin-top: 12px;
+        font-size: 12px;
+      }
+      .split span {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        color: var(--ink-dim);
+      }
+      .swatch {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+      }
+      .swatch.m {
+        background: var(--male);
+      }
+      .swatch.f {
+        background: var(--female);
+      }
+
+      .section-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--ink-dim);
+        margin: 32px 2px 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .section-title::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: var(--line);
+      }
+      .period-summary {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--warn);
+        white-space: nowrap;
+      }
+
+      /* ---------- Charts ---------- */
+      .panel {
+        background: var(--card-solid);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 20px;
+      }
+      .chart-row {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 14px;
+      }
+      .donut-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+      .donut-card {
+        text-align: center;
+      }
+      .donut-card h4 {
+        margin: 0 0 8px;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--ink-dim);
+      }
+      .donut-wrap {
+        position: relative;
+        height: 130px;
+      }
+      .donut-center {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        pointer-events: none;
+      }
+      .donut-center b {
+        font-size: 16px;
+      }
+      .donut-center span {
+        font-size: 10px;
+        color: var(--ink-faint);
+      }
+
+      canvas {
+        max-width: 100%;
+      }
+
+      @media (max-width: 760px) {
+        .chart-row {
+          grid-template-columns: 1fr;
+        }
+        .donut-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      #app {
+        display: none;
+      }
+      .empty-note {
+        font-size: 12px;
+        color: var(--ink-faint);
+        text-align: center;
+        padding: 30px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="gate">
+      <div class="mark">🔒</div>
+      <h2>ورود به داشبورد</h2>
+      <p>
+        برای مشاهده‌ی آمار، کلید محرمانه‌ی
+        <code>TRACKING_SECRET</code> رو وارد کن.<br />این کلید فقط
+        یک‌بار در همین مرورگر ذخیره می‌شه.
+      </p>
+      <input
+        id="keyInput"
+        type="password"
+        placeholder="کلید محرمانه"
+        autocomplete="off"
+      />
+      <button onclick="submitKey()">ورود</button>
+      <div id="gateError">کلید اشتباهه یا دسترسی نداری ❌</div>
+    </div>
+
+    <div class="wrap" id="app">
+      <header>
+        <div class="brand">
+          <div class="mark">💗</div>
+          <div>
+            <h1>داشبورد آمار پونس</h1>
+            <p id="dateLabel">—</p>
+          </div>
+        </div>
+        <div class="toolbar">
+          <span id="lastUpdate"><span class="dot"></span>—</span>
+          <select id="daysSelect" onchange="loadData()">
+            <option value="7">۷ روز اخیر</option>
+            <option value="14">۱۴ روز اخیر</option>
+            <option value="30" selected>۳۰ روز اخیر</option>
+            <option value="60">۶۰ روز اخیر</option>
+            <option value="90">۹۰ روز اخیر</option>
+          </select>
+          <button class="refresh-btn" onclick="loadData()">
+            🔄 بروزرسانی
+          </button>
+        </div>
+      </header>
+
+      <div class="grid" id="statCards"></div>
+
+      <div class="section-title">
+        <span id="trendTitleText">روند {DAYS} روز اخیر</span>
+        <span id="trendPeriodSummary" class="period-summary"></span>
+      </div>
+      <div class="chart-row">
+        <div class="panel">
+          <canvas id="trendChart" height="230"></canvas>
+        </div>
+        <div class="panel">
+          <canvas id="funnelChart" height="230"></canvas>
+        </div>
+      </div>
+
+      <div class="section-title">تفکیک جنسیتی امروز</div>
+      <div class="panel">
+        <div class="donut-grid" id="donutGrid"></div>
+      </div>
+    </div>
+
+    <script>
+      const METRICS = [
+        {
+          key: "activeUsers",
+          label: "فعال امروز",
+          accent: "var(--rose)",
+        },
+        {
+          key: "newUsers",
+          label: "کاربر جدید امروز",
+          accent: "var(--good)",
+        },
+        {
+          key: "likes",
+          label: "لایک امروز",
+          accent: "var(--female)",
+        },
+        {
+          key: "nopes",
+          label: "رد کردن امروز",
+          accent: "var(--ink-faint)",
+        },
+        { key: "matches", label: "مچ امروز", accent: "var(--rose)" },
+        {
+          key: "subscriptions",
+          label: "خرید اشتراک امروز",
+          accent: "var(--warn)",
+        },
+      ];
+
+      let trendChartInstance = null;
+      let funnelChartInstance = null;
+      let donutInstances = [];
+
+      function fa(n) {
+        return (n ?? 0).toLocaleString("en-US");
+      }
+
+      function getKey() {
+        const urlKey = new URLSearchParams(location.search).get(
+          "key",
+        );
+        if (urlKey) {
+          localStorage.setItem("pounceTrackingKey", urlKey);
+          return urlKey;
+        }
+        return localStorage.getItem("pounceTrackingKey");
+      }
+
+      function submitKey() {
+        const val = document.getElementById("keyInput").value.trim();
+        if (!val) return;
+        localStorage.setItem("pounceTrackingKey", val);
+        const url = new URL(location.href);
+        url.searchParams.set("key", val);
+        history.replaceState({}, "", url);
+        boot();
+      }
+
+      async function boot() {
+        const key = getKey();
+        if (!key) {
+          document.getElementById("gate").style.display = "block";
+          document.getElementById("app").style.display = "none";
+          return;
+        }
+        const ok = await loadData();
+        if (ok) {
+          document.getElementById("gate").style.display = "none";
+          document.getElementById("app").style.display = "block";
+          if (!window.__pollingStarted) {
+            window.__pollingStarted = true;
+            setInterval(loadData, 2 * 60 * 1000); // هم‌گام با بازه‌ی flush سرور
+          }
+        } else {
+          document.getElementById("gate").style.display = "block";
+          document.getElementById("app").style.display = "none";
+          document.getElementById("gateError").style.display =
+            "block";
+        }
+      }
+
+      async function loadData() {
+        const key = getKey();
+        const days =
+          document.getElementById("daysSelect")?.value || 30;
+        try {
+          const res = await fetch(
+            `/tracking?key=${encodeURIComponent(key)}&days=${days}`,
+          );
+          if (res.status === 403) return false;
+          const data = await res.json();
+          render(data, days);
+          return true;
+        } catch (err) {
+          console.error(err);
+          return false;
+        }
+      }
+
+      function render(data, days) {
+        const today = data.today || {};
+        document.getElementById("dateLabel").textContent =
+          `آمار روز ${today.date || "—"}`;
+        document.getElementById("lastUpdate").innerHTML =
+          `<span class="dot"></span>آخرین بروزرسانی سرور: ${today.lastFlushAt ? new Date(today.lastFlushAt).toLocaleTimeString("fa-IR") : "—"}`;
+
+        renderCards(today);
+        renderTrend(data.history || [], days);
+        renderFunnel(today);
+        renderDonuts(today);
+      }
+
+      function renderCards(today) {
+        const box = document.getElementById("statCards");
+        box.innerHTML = "";
+
+        METRICS.forEach((m) => {
+          const d = today[m.key] || { total: 0, male: 0, female: 0 };
+          const card = document.createElement("div");
+          card.className = "card";
+          card.style.setProperty("--accent", m.accent);
+          card.innerHTML = `
+      <div class="label">${m.label}</div>
+      <div class="value">${fa(d.total)}</div>
+      <div class="split">
+        <span><span class="swatch m"></span>مرد ${fa(d.male)}</span>
+        <span><span class="swatch f"></span>زن ${fa(d.female)}</span>
+      </div>
+    `;
+          box.appendChild(card);
+        });
+
+        // نرخ بازگشت
+        const ret = today.retention || {};
+        const retCard = document.createElement("div");
+        retCard.className = "card";
+        retCard.style.setProperty("--accent", "var(--good)");
+        retCard.innerHTML = `
+    <div class="label">نرخ بازگشت کاربران</div>
+    <div class="value">${fa(ret.returnRatePercent || 0)}<small>%</small></div>
+    <div class="split"><span>${fa(ret.returningUsers || 0)} کاربر برگشته از فعالان امروز</span></div>
+  `;
+        box.appendChild(retCard);
+
+        // کاربران ازدست‌رفته
+        const churnCard = document.createElement("div");
+        churnCard.className = "card";
+        churnCard.style.setProperty("--accent", "var(--warn)");
+        churnCard.innerHTML = `
+    <div class="label">کاربران غیرفعال</div>
+    <div class="value">${fa(ret.inactiveOver7d || 0)}<small>+۷ روز</small></div>
+    <div class="split">
+      <span>+۱۴ روز: ${fa(ret.inactiveOver14d || 0)}</span>
+      <span>+۳۰ روز: ${fa(ret.inactiveOver30d || 0)}</span>
+    </div>
+  `;
+        box.appendChild(churnCard);
+
+        // نرخ تبدیل لایک به مچ
+        const likes = today.likes?.total || 0;
+        const matches = today.matches?.total || 0;
+        const rate =
+          likes > 0 ? Math.round((matches / likes) * 1000) / 10 : 0;
+        const rateCard = document.createElement("div");
+        rateCard.className = "card";
+        rateCard.style.setProperty("--accent", "var(--rose)");
+        rateCard.innerHTML = `
+    <div class="label">نرخ تبدیل لایک به مچ</div>
+    <div class="value">${fa(rate)}<small>%</small></div>
+    <div class="split"><span>${fa(matches)} مچ از ${fa(likes)} لایک امروز</span></div>
+  `;
+        box.appendChild(rateCard);
+
+        // درآمد خریدهای اشتراک امروز
+        const revenueToman = Math.round(
+          (today.subscriptionRevenue || 0) / 10,
+        );
+        const revCard = document.createElement("div");
+        revCard.className = "card";
+        revCard.style.setProperty("--accent", "var(--good)");
+        revCard.innerHTML = `
+    <div class="label">درآمد اشتراک امروز</div>
+    <div class="value">${fa(revenueToman)}<small>تومان</small></div>
+    <div class="split"><span>از ${fa(today.subscriptions?.total || 0)} خرید امروز</span></div>
+  `;
+        box.appendChild(revCard);
+      }
+
+      function renderTrend(history, days) {
+        const ctx = document.getElementById("trendChart");
+        document.getElementById("trendTitleText").textContent =
+          `روند ${days} روز اخیر`;
+
+        const totalSubs = history.reduce(
+          (sum, h) => sum + (h.subscriptions?.total || 0),
+          0,
+        );
+        const totalRevenueToman = Math.round(
+          history.reduce(
+            (sum, h) => sum + (h.subscriptionRevenue || 0),
+            0,
+          ) / 10,
+        );
+        document.getElementById("trendPeriodSummary").textContent =
+          totalSubs > 0
+            ? `🎟 ${fa(totalSubs)} اشتراک | ${fa(totalRevenueToman)} تومان`
+            : "";
+
+        const labels = history.map((h) => h.date?.slice(5) || "");
+        const active = history.map((h) => h.activeUsers?.total || 0);
+        const newU = history.map((h) => h.newUsers?.total || 0);
+        const matches = history.map((h) => h.matches?.total || 0);
+        const subs = history.map((h) => h.subscriptions?.total || 0);
+
+        if (trendChartInstance) trendChartInstance.destroy();
+
+        if (history.length === 0) {
+          ctx.parentElement.innerHTML =
+            '<div class="empty-note">هنوز داده‌ی تاریخی کافی وجود نداره</div>';
+          return;
+        }
+
+        trendChartInstance = new Chart(ctx, {
+          type: "line",
+          data: {
+            labels,
+            datasets: [
+              {
+                label: "فعال",
+                data: active,
+                borderColor: "#FF5C82",
+                backgroundColor: "#FF5C8222",
+                tension: 0.35,
+                fill: true,
+                pointRadius: 2,
+              },
+              {
+                label: "کاربر جدید",
+                data: newU,
+                borderColor: "#5FE0A8",
+                backgroundColor: "#5FE0A822",
+                tension: 0.35,
+                fill: true,
+                pointRadius: 2,
+              },
+              {
+                label: "مچ",
+                data: matches,
+                borderColor: "#5FC7E0",
+                backgroundColor: "#5FC7E022",
+                tension: 0.35,
+                fill: true,
+                pointRadius: 2,
+              },
+              {
+                label: "اشتراک",
+                data: subs,
+                borderColor: "#F2C46B",
+                backgroundColor: "#F2C46B22",
+                tension: 0.35,
+                fill: true,
+                pointRadius: 2,
+              },
+            ],
+          },
+          options: baseChartOptions("روند فعالیت"),
+        });
+      }
+
+      function renderFunnel(today) {
+        const ctx = document.getElementById("funnelChart");
+        if (funnelChartInstance) funnelChartInstance.destroy();
+
+        funnelChartInstance = new Chart(ctx, {
+          type: "bar",
+          data: {
+            labels: ["لایک", "رد کردن", "مچ", "اشتراک"],
+            datasets: [
+              {
+                data: [
+                  today.likes?.total || 0,
+                  today.nopes?.total || 0,
+                  today.matches?.total || 0,
+                  today.subscriptions?.total || 0,
+                ],
+                backgroundColor: [
+                  "#FF7CA8",
+                  "#7C6B84",
+                  "#FF5C82",
+                  "#F2C46B",
+                ],
+                borderRadius: 8,
+                barThickness: 34,
+              },
+            ],
+          },
+          options: {
+            ...baseChartOptions("رفتار امروز"),
+            plugins: {
+              legend: { display: false },
+              title: {
+                display: true,
+                text: "رفتار امروز",
+                color: "#B7A9BE",
+                font: { family: "Vazirmatn", size: 12 },
+              },
+            },
+          },
+        });
+      }
+
+      function baseChartOptions(title) {
+        return {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          scales: {
+            x: {
+              ticks: {
+                color: "#7C6B84",
+                font: { family: "Vazirmatn", size: 10 },
+              },
+              grid: { color: "#3A2C4033" },
+            },
+            y: {
+              beginAtZero: true,
+              ticks: {
+                color: "#7C6B84",
+                font: { family: "Vazirmatn", size: 10 },
+              },
+              grid: { color: "#3A2C4033" },
+            },
+          },
+          plugins: {
+            legend: {
+              labels: {
+                color: "#B7A9BE",
+                font: { family: "Vazirmatn", size: 11 },
+              },
+            },
+          },
+        };
+      }
+
+      function renderDonuts(today) {
+        const grid = document.getElementById("donutGrid");
+        grid.innerHTML = "";
+        donutInstances.forEach((c) => c.destroy());
+        donutInstances = [];
+
+        const items = [
+          { key: "activeUsers", label: "فعال امروز" },
+          { key: "newUsers", label: "کاربر جدید امروز" },
+          { key: "likes", label: "لایک امروز" },
+          { key: "matches", label: "مچ امروز" },
+          { key: "subscriptions", label: "اشتراک امروز" },
+        ];
+
+        items.forEach((item) => {
+          const d = today[item.key] || {
+            total: 0,
+            male: 0,
+            female: 0,
+          };
+          const wrap = document.createElement("div");
+          wrap.className = "donut-card";
+          wrap.innerHTML = `
+      <h4>${item.label}</h4>
+      <div class="donut-wrap">
+        <canvas></canvas>
+        <div class="donut-center"><b>${fa(d.total)}</b><span>کل</span></div>
+      </div>
+    `;
+          grid.appendChild(wrap);
+          const canvas = wrap.querySelector("canvas");
+          const hasData = d.male + d.female > 0;
+          const chart = new Chart(canvas, {
+            type: "doughnut",
+            data: {
+              labels: ["مرد", "زن"],
+              datasets: [
+                {
+                  data: hasData ? [d.male, d.female] : [1],
+                  backgroundColor: hasData
+                    ? ["#5FC7E0", "#FF7CA8"]
+                    : ["#3A2C40"],
+                  borderWidth: 0,
+                },
+              ],
+            },
+            options: {
+              cutout: "72%",
+              plugins: {
+                legend: { display: false },
+                tooltip: { enabled: hasData },
+              },
+              maintainAspectRatio: false,
+            },
+          });
+          donutInstances.push(chart);
+        });
+      }
+
+      document
+        .getElementById("keyInput")
+        .addEventListener("keydown", (e) => {
+          if (e.key === "Enter") submitKey();
+        });
+
+      boot();
+    </script>
+  </body>
+</html>
